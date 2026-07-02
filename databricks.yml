@@ -1,0 +1,51 @@
+bundle:
+  name: scf_cohort_matrix
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    default: pd_dtl_ds
+  schema:
+    default: savings_cashflow
+  model_name:
+    default: ${var.catalog}.${var.schema}.scf_cohort_model
+  notification_email:
+    default: capukvelu@gmail.com
+  notification_webhook_url:
+    default: ""
+  serving_endpoint_name:
+    default: scf-cohort-serving-endpoint
+  environment:
+    default: dev
+  pipeline_pause_status:
+    default: PAUSED
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://dbc-a2b9471c-0cac.cloud.databricks.com
+    variables:
+      environment: dev
+      catalog: pd_dtl_ds_dev
+      notification_email: capukvelu@gmail.com
+      notification_webhook_url: ""
+      serving_endpoint_name: scf-cohort-serving-endpoint-dev
+
+  prod:
+    mode: production
+    workspace:
+      host: https://dbc-a2b9471c-0cac.cloud.databricks.com
+      root_path: /Shared/.bundle/scf_cohort_matrix/${bundle.target}
+    variables:
+      environment: prod
+      catalog: pd_dtl_ds
+      notification_email: capukvelu@gmail.com
+      notification_webhook_url: ""
+      serving_endpoint_name: scf-cohort-serving-endpoint
+      pipeline_pause_status: UNPAUSED
+    run_as:
+      service_principal_name: 768cb535-d83e-4628-9ece-96f44c177f2f

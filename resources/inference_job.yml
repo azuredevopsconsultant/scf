@@ -1,0 +1,188 @@
+# =============================================================================
+# INFERENCE PIPELINE
+# Data Ingestion -> Preprocessing -> Inference -> Model Monitoring ->
+# Data Drift (alert+mail on drift) -> Data Quality -> Confirmation Mail
+# =============================================================================
+resources:
+  jobs:
+    scf_inference_pipeline:
+      name: "[${bundle.target}] SCF Cohort - Inference Pipeline"
+
+      tags:
+        project: scf_cohort_matrix
+        pipeline_type: inference
+        environment: ${var.environment}
+
+      email_notifications:
+        on_success:
+          - ${var.notification_email}
+        on_failure:
+          - ${var.notification_email}
+        no_alert_for_skipped_runs: true
+
+      # Daily, after upstream base-data landing job (adjust to your SLA)
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: "UTC"
+        pause_status: ${var.pipeline_pause_status}
+
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+
+      performance_target: STANDARD
+
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: model_name
+          default: ${var.model_name}
+        - name: model_alias
+          default: "champion"
+        - name: environment
+          default: ${var.environment}
+        - name: notification_webhook_url
+          default: ${var.notification_webhook_url}
+        - name: bundle_root
+          default: ${workspace.file_path}
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+
+      tasks:
+        - task_key: data_ingestion
+          environment_key: default
+          max_retries: 2
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/inference/01_data_ingestion.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              bundle_root: "{{job.parameters.bundle_root}}"
+          timeout_seconds: 3600
+
+        - task_key: data_preprocessing
+          depends_on:
+            - task_key: data_ingestion
+          environment_key: default
+          max_retries: 2
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/inference/02_data_preprocessing.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+          timeout_seconds: 3600
+
+        - task_key: inferencing
+          depends_on:
+            - task_key: data_preprocessing
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 600000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/inference/03_inference.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              model_name: "{{job.parameters.model_name}}"
+              model_alias: "{{job.parameters.model_alias}}"
+          timeout_seconds: 7200
+
+        - task_key: model_monitoring
+          depends_on:
+            - task_key: inferencing
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/inference/04_model_monitoring.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+          timeout_seconds: 3600
+
+        - task_key: data_drift
+          depends_on:
+            - task_key: model_monitoring
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/inference/05_data_drift.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              notification_email: ${var.notification_email}
+              notification_webhook_url: "{{job.parameters.notification_webhook_url}}"
+          timeout_seconds: 3600
+          # Drift is a conditional, business-meaning alert (only when the
+          # test actually trips), so it is sent programmatically from inside
+          # the notebook via src/common/notifications.py rather than through
+          # a blanket on_success job_notification. We still keep on_failure
+          # here in case the drift *check itself* errors out.
+          email_notifications:
+            on_failure:
+              - ${var.notification_email}
+
+        - task_key: data_quality
+          depends_on:
+            - task_key: data_drift
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/inference/06_data_quality.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+          timeout_seconds: 1800
+
+        - task_key: confirmation_mail
+          depends_on:
+            - task_key: retraining_trigger
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 120000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/inference/07_confirmation_mail.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              notification_email: ${var.notification_email}
+              notification_webhook_url: "{{job.parameters.notification_webhook_url}}"
+              pipeline_name: "inference"
+          timeout_seconds: 900
+          # Always runs even if an upstream task failed, so the recipient
+          # always gets a run summary (pass/fail per stage) rather than
+          # silence when something breaks downstream of drift/quality.
+          run_if: ALL_DONE
+
+        - task_key: retraining_trigger
+          depends_on:
+            - task_key: data_quality
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 120000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/inference/08_retraining_trigger.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              notification_email: ${var.notification_email}
+              notification_webhook_url: "{{job.parameters.notification_webhook_url}}"
+          timeout_seconds: 900
+          run_if: ALL_DONE

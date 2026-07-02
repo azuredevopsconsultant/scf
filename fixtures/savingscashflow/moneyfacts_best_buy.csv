@@ -1,0 +1,113 @@
+period,mapping_category,best_buy
+2023-06,EA ISA (Online),0.03764
+2023-07,EA ISA (Online),0.03885
+2023-08,EA ISA (Online),0.03775
+2023-09,EA ISA (Online),0.03716
+2023-10,EA ISA (Online),0.03772
+2023-11,EA ISA (Online),0.03793
+2023-12,EA ISA (Online),0.03837
+2024-01,EA ISA (Online),0.03814
+2024-02,EA ISA (Online),0.0393
+2024-03,EA ISA (Online),0.04038
+2024-04,EA ISA (Online),0.04089
+2024-05,EA ISA (Online),0.04225
+2024-06,EA ISA (Online),0.04308
+2024-07,EA ISA (Online),0.04285
+2024-08,EA ISA (Online),0.0436
+2024-09,EA ISA (Online),0.04329
+2024-10,EA ISA (Online),0.04445
+2024-11,EA ISA (Online),0.04487
+2024-12,EA ISA (Online),0.04518
+2025-01,EA ISA (Online),0.04509
+2025-02,EA ISA (Online),0.04653
+2025-03,EA ISA (Online),0.04686
+2025-04,EA ISA (Online),0.04698
+2025-05,EA ISA (Online),0.04715
+2025-06,EA ISA (Online),0.04803
+2025-07,EA ISA (Online),0.04878
+2025-08,EA ISA (Online),0.04957
+2025-09,EA ISA (Online),0.05037
+2023-06,EA Non-ISA (Online),0.04732
+2023-07,EA Non-ISA (Online),0.04988
+2023-08,EA Non-ISA (Online),0.05358
+2023-09,EA Non-ISA (Online),0.0577
+2023-10,EA Non-ISA (Online),0.06082
+2023-11,EA Non-ISA (Online),0.06336
+2023-12,EA Non-ISA (Online),0.06591
+2024-01,EA Non-ISA (Online),0.06965
+2024-02,EA Non-ISA (Online),0.07345
+2024-03,EA Non-ISA (Online),0.0771
+2024-04,EA Non-ISA (Online),0.07978
+2024-05,EA Non-ISA (Online),0.08318
+2024-06,EA Non-ISA (Online),0.08648
+2024-07,EA Non-ISA (Online),0.08987
+2024-08,EA Non-ISA (Online),0.09378
+2024-09,EA Non-ISA (Online),0.09717
+2024-10,EA Non-ISA (Online),0.10093
+2024-11,EA Non-ISA (Online),0.10419
+2024-12,EA Non-ISA (Online),0.10764
+2025-01,EA Non-ISA (Online),0.11136
+2025-02,EA Non-ISA (Online),0.1134
+2025-03,EA Non-ISA (Online),0.11636
+2025-04,EA Non-ISA (Online),0.11919
+2025-05,EA Non-ISA (Online),0.1219
+2025-06,EA Non-ISA (Online),0.12489
+2025-07,EA Non-ISA (Online),0.1293
+2025-08,EA Non-ISA (Online),0.13182
+2025-09,EA Non-ISA (Online),0.1358
+2023-06,Restricted ISA,0.03908
+2023-07,Restricted ISA,0.03703
+2023-08,Restricted ISA,0.03507
+2023-09,Restricted ISA,0.03318
+2023-10,Restricted ISA,0.03038
+2023-11,Restricted ISA,0.02748
+2023-12,Restricted ISA,0.02565
+2024-01,Restricted ISA,0.02297
+2024-02,Restricted ISA,0.01942
+2024-03,Restricted ISA,0.01599
+2024-04,Restricted ISA,0.01273
+2024-05,Restricted ISA,0.01061
+2024-06,Restricted ISA,0.0082
+2024-07,Restricted ISA,0.00622
+2024-08,Restricted ISA,0.005
+2024-09,Restricted ISA,0.005
+2024-10,Restricted ISA,0.005
+2024-11,Restricted ISA,0.005
+2024-12,Restricted ISA,0.005
+2025-01,Restricted ISA,0.005
+2025-02,Restricted ISA,0.005
+2025-03,Restricted ISA,0.005
+2025-04,Restricted ISA,0.005
+2025-05,Restricted ISA,0.005
+2025-06,Restricted ISA,0.005
+2025-07,Restricted ISA,0.005
+2025-08,Restricted ISA,0.005
+2025-09,Restricted ISA,0.005
+2023-06,Restricted Non-ISA,0.03637
+2023-07,Restricted Non-ISA,0.03731
+2023-08,Restricted Non-ISA,0.03696
+2023-09,Restricted Non-ISA,0.0368
+2023-10,Restricted Non-ISA,0.03674
+2023-11,Restricted Non-ISA,0.03694
+2023-12,Restricted Non-ISA,0.03826
+2024-01,Restricted Non-ISA,0.03853
+2024-02,Restricted Non-ISA,0.03922
+2024-03,Restricted Non-ISA,0.04126
+2024-04,Restricted Non-ISA,0.04198
+2024-05,Restricted Non-ISA,0.04356
+2024-06,Restricted Non-ISA,0.04381
+2024-07,Restricted Non-ISA,0.04465
+2024-08,Restricted Non-ISA,0.04489
+2024-09,Restricted Non-ISA,0.04561
+2024-10,Restricted Non-ISA,0.04728
+2024-11,Restricted Non-ISA,0.0469
+2024-12,Restricted Non-ISA,0.04825
+2025-01,Restricted Non-ISA,0.04943
+2025-02,Restricted Non-ISA,0.04996
+2025-03,Restricted Non-ISA,0.0498
+2025-04,Restricted Non-ISA,0.05085
+2025-05,Restricted Non-ISA,0.05143
+2025-06,Restricted Non-ISA,0.05261
+2025-07,Restricted Non-ISA,0.05363
+2025-08,Restricted Non-ISA,0.05591
+2025-09,Restricted Non-ISA,0.05671

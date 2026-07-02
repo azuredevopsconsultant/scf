@@ -1,0 +1,72 @@
+# fixtures/savingscashflow/dataset_config.yml
+#
+# Describes the synthetic SavingsCashflow fixture data checked into this repo
+# under fixtures/savingscashflow/. Regenerate any time via:
+#   python fixtures/generate_fixtures.py
+#
+# This is NOT real customer data - it's randomly simulated with a fixed seed
+# (42) purely so the two DAB pipelines can be run end-to-end without S3/PII
+# access. Swap the ingestion tasks back to the real S3 paths (see the
+# commented-out block in src/*/01_data_ingestion.py history / README) once
+# you have access.
+
+dataset: savingscashflow
+description: >
+  Synthetic fixed-cohort savings account data for the SCF cohort GLM model.
+  Five products across ISA / Non-ISA, online / multi-channel, and restricted
+  variants, each with simulated monthly account-level balances, receipts,
+  withdrawals, and internal transfers, plus a matching best-buy market rate
+  series and QRM product-category mapping.
+generated_by: fixtures/generate_fixtures.py
+random_seed: 42
+
+files:
+  - name: base_data_training.csv
+    description: >
+      Account-level history used by the training pipeline. Cohorts opened
+      2023-06..2024-06; reporting periods 2023-06..2025-06.
+    used_by: [training]
+    row_count_approx: 32000
+    columns:
+      - {name: "account id", type: string}
+      - {name: "product code", type: string, references: qrm_products.csv#Product Code}
+      - {name: "opening date", type: date}
+      - {name: "reporting period", type: string, format: "YYYY-MM"}
+      - {name: "period balance", type: double}
+      - {name: "£ withdrawal", type: double}
+      - {name: "£ receipt", type: double}
+      - {name: "£ internal transfer", type: double}
+      - {name: "interest rate", type: double}
+      - {name: "account tenure (months)", type: int}
+
+  - name: base_data_inference.csv
+    description: >
+      The "next" incremental monthly batch (reporting periods 2025-07..2025-09)
+      for the same cohorts - simulates what a real monthly extract landing for
+      scoring would look like. Same schema as base_data_training.csv.
+    used_by: [inference]
+    row_count_approx: 2600
+
+  - name: moneyfacts_best_buy.csv
+    description: Monthly market best-buy rate per product mapping category.
+    used_by: [training, inference]
+    row_count_approx: 112
+    columns:
+      - {name: period, type: string, format: "YYYY-MM"}
+      - {name: mapping_category, type: string}
+      - {name: best_buy, type: double}
+
+  - name: qrm_products.csv
+    description: Product code to QRM category mapping.
+    used_by: [training, inference]
+    row_count_approx: 5
+    columns:
+      - {name: "Product Code", type: string}
+      - {name: "QRM Category", type: string}
+
+products:
+  - {code: P001, qrm_category: "Variable ISA (Online)",    best_buy_category: "EA ISA (Online)"}
+  - {code: P002, qrm_category: "Variable NonISA (Online)", best_buy_category: "EA Non-ISA (Online)"}
+  - {code: P003, qrm_category: "HL ISA",                   best_buy_category: "EA ISA (Online)"}
+  - {code: P004, qrm_category: "Restricted ISA",            best_buy_category: "Restricted ISA"}
+  - {code: P005, qrm_category: "Restricted NonISA",         best_buy_category: "Restricted Non-ISA"}

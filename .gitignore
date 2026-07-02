@@ -1,0 +1,7 @@
+.databricks/
+__pycache__/
+*.pyc
+.venv/
+Results/
+*.pkl
+.DS_Store

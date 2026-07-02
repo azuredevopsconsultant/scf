@@ -1,0 +1,201 @@
+# =============================================================================
+# TRAINING PIPELINE
+# Data Ingestion -> Preprocessing -> Model Training -> Model Evaluation ->
+# MLflow Registration (Champion/Challenger)
+#
+# Notification strategy (best practice, see README §Notifications):
+#   - Job-level email_notifications fire exactly once per run, regardless of
+#     which task failed. This is the reliable "pipeline succeeded / pipeline
+#     failed" signal and is cheaper/simpler than wiring a mail task at the end.
+#   - on_duration_warning_threshold_exceeded catches silent hangs (e.g. GLM
+#     fit looping) that aren't outright failures but eat cluster hours.
+# =============================================================================
+resources:
+  jobs:
+    scf_training_pipeline:
+      name: "[${bundle.target}] SCF Cohort - Training Pipeline"
+
+      tags:
+        project: scf_cohort_matrix
+        pipeline_type: training
+        environment: ${var.environment}
+
+      email_notifications:
+        on_success:
+          - ${var.notification_email}
+        on_failure:
+          - ${var.notification_email}
+        on_duration_warning_threshold_exceeded:
+          - ${var.notification_email}
+        no_alert_for_skipped_runs: true
+
+      notification_settings:
+        no_alert_for_canceled_runs: false
+
+      # Weekly retrain, Monday 03:00 UTC - adjust to your data refresh cadence.
+      schedule:
+        quartz_cron_expression: "0 0 3 ? * MON"
+        timezone_id: "UTC"
+        pause_status: ${var.pipeline_pause_status}
+
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+
+      performance_target: STANDARD
+
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: model_name
+          default: ${var.model_name}
+        - name: cutoff_period
+          default: "2025-01"
+        - name: environment
+          default: ${var.environment}
+        - name: notification_webhook_url
+          default: ${var.notification_webhook_url}
+        - name: serving_endpoint_name
+          default: ${var.serving_endpoint_name}
+        - name: bundle_root
+          # Absolute Workspace path this bundle is deployed to - lets
+          # data_ingestion resolve fixtures/savingscashflow/*.csv regardless
+          # of dev/prod deploy location, without hardcoding a path.
+          default: ${workspace.file_path}
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+
+      tasks:
+        - task_key: data_ingestion
+          environment_key: default
+          max_retries: 2
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/01_data_ingestion.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              bundle_root: "{{job.parameters.bundle_root}}"
+          timeout_seconds: 3600
+
+        - task_key: data_preprocessing
+          depends_on:
+            - task_key: data_ingestion
+          environment_key: default
+          max_retries: 2
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/02_data_preprocessing.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+          timeout_seconds: 3600
+
+        - task_key: model_training
+          depends_on:
+            - task_key: data_preprocessing
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 600000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/03_model_training.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              cutoff_period: "{{job.parameters.cutoff_period}}"
+          timeout_seconds: 10800
+
+        - task_key: model_evaluation
+          depends_on:
+            - task_key: model_training
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/04_model_evaluation.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+          timeout_seconds: 3600
+
+        - task_key: model_registration
+          depends_on:
+            - task_key: model_evaluation
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/05_model_registration.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              model_name: "{{job.parameters.model_name}}"
+          timeout_seconds: 1800
+          # Task-level alert in addition to the job-level one: this is the
+          # single most business-critical step (it decides Champion vs
+          # Challenger), so it gets its own explicit notification too.
+          email_notifications:
+            on_success:
+              - ${var.notification_email}
+            on_failure:
+              - ${var.notification_email}
+
+        - task_key: deploy_serving_endpoint
+          depends_on:
+            - task_key: model_registration
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 120000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/07_deploy_serving_endpoint.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              model_name: "{{job.parameters.model_name}}"
+              serving_endpoint_name: "{{job.parameters.serving_endpoint_name}}"
+          timeout_seconds: 1800
+
+        - task_key: smoke_test_serving_endpoint
+          depends_on:
+            - task_key: deploy_serving_endpoint
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 120000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/08_smoke_test_serving_endpoint.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              serving_endpoint_name: "{{job.parameters.serving_endpoint_name}}"
+          timeout_seconds: 900
+
+        - task_key: confirmation_mail
+          depends_on:
+            - task_key: smoke_test_serving_endpoint
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 120000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/06_confirmation_mail.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              notification_email: ${var.notification_email}
+              notification_webhook_url: "{{job.parameters.notification_webhook_url}}"
+          timeout_seconds: 900
+          # Always runs, even if an upstream task failed, so the recipient
+          # gets a run summary either way (same pattern as the inference job).
+          run_if: ALL_DONE
