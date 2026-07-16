@@ -59,11 +59,11 @@ resources:
           default: ${var.notification_webhook_url}
         - name: serving_endpoint_name
           default: ${var.serving_endpoint_name}
-        - name: bundle_root
-          # Absolute Workspace path this bundle is deployed to - lets
-          # data_ingestion resolve fixtures/savingscashflow/*.csv regardless
-          # of dev/prod deploy location, without hardcoding a path.
-          default: ${workspace.file_path}
+        - name: volume_path
+          # UC Volume holding the real source files:
+          #   base_query_df_apr_2026.parquet, moneyfacts_merge.parquet,
+          #   QRM_products_revised.csv
+          default: /Volumes/preprod_catalog/ml_workspace/data_scientists/SCF
         - name: redshift_host
           default: ""
         - name: redshift_port
@@ -120,7 +120,7 @@ resources:
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
-              bundle_root: "{{job.parameters.bundle_root}}"
+              volume_path: "{{job.parameters.volume_path}}"
           timeout_seconds: 3600
 
         - task_key: data_preprocessing
