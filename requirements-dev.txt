@@ -1,11 +1,11 @@
 # Local development / CI-only dependencies. Pulls in the runtime deps via
 # -r requirements.txt, then adds tooling that must NEVER be installed on the
 # serverless job compute:
-#   - databricks-connect : local Spark session against a remote cluster only
+#   - pyspark            : local Spark sessions for unit tests (replaces databricks-connect in CI)
 #   - databricks-sdk     : used by src/dev ops scripts + CI, pre-installed on jobs
 #   - pytest             : unit/integration test runner
 # Install locally / in CI with:  pip install -r requirements-dev.txt
 -r requirements.txt
-databricks-connect>=15.4,<15.5
+pyspark>=3.5.0,<3.6.0
 databricks-sdk>=0.20.0
 pytest>=8.0.0
