@@ -1,0 +1,11 @@
+# Runtime dependencies - identical across dev / preprod / prod for
+# reproducibility. Referenced by every serverless job's
+# environments.spec.dependencies (see resources/*.yml) so the job compute
+# installs the exact same pinned versions the notebooks import, rather than
+# relying on whatever the base serverless image happens to ship.
+mlflow>=2.14.0
+statsmodels>=0.14.0
+patsy>=0.5.6
+pandas>=2.0.0
+numpy>=1.26.0
+databricks-feature-engineering>=0.6.0

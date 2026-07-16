@@ -83,9 +83,14 @@ resources:
         - environment_key: default
           spec:
             environment_version: "2"
+            # Runtime deps installed on the serverless job compute. Single
+            # source of truth lives in requirements.txt (synced to the
+            # workspace files root), so dev/preprod/prod all run identical
+            # pinned versions.
+            dependencies:
+              - "-r ${workspace.file_path}/requirements.txt"
 
       tasks:
-        # Feature engineering from Redshift sales data — runs before data
         # ingestion so enriched features are available for model training.
         # Skip by leaving redshift_host blank (task fails fast if host empty).
         - task_key: feature_engineering_redshift

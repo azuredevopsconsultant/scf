@@ -42,7 +42,8 @@ scf-cohort-dab/
 │       └── 07_confirmation_mail.py
 ├── tests/
 │   └── test_glm_core.py           # unit tests for the ported classes
-└── requirements-dev.txt
+├── requirements.txt               # runtime deps (installed on serverless jobs)
+└── requirements-dev.txt           # -r requirements.txt + local/CI-only tooling
 ```
 
 ## Pipeline 1 — Training (Quarterly)
