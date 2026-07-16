@@ -21,6 +21,12 @@ variables:
     default: dev
   pipeline_pause_status:
     default: PAUSED
+  secret_scope:
+    default: scf-cohort-notifications
+  # Service principal used by CI/CD runs (OIDC-authenticated via GitHub Actions).
+  # Set to your spn-dev / spn-prod application ID; overridden per target below.
+  service_principal_id:
+    default: ""
 
 targets:
   dev:
@@ -28,18 +34,40 @@ targets:
     default: true
     workspace:
       host: https://dbc-a2b9471c-0cac.cloud.databricks.com
+      profile: dbc-a2b9471c-0cac
     variables:
       environment: dev
       catalog: pd_dtl_ds_dev
       notification_email: capukvelu@gmail.com
       notification_webhook_url: ""
       serving_endpoint_name: scf-cohort-serving-endpoint-dev
+      secret_scope: scf-cohort-dev
+
+  preprod:
+    mode: production
+    workspace:
+      host: https://dbc-a2b9471c-0cac.cloud.databricks.com
+      root_path: /Shared/.bundle/scf_cohort_matrix/${bundle.target}
+    run_as:
+      service_principal_name: 768cb535-d83e-4628-9ece-96f44c177f2f
+    variables:
+      environment: preprod
+      catalog: pd_dtl_ds_pp
+      notification_email: capukvelu@gmail.com
+      notification_webhook_url: ""
+      serving_endpoint_name: scf-cohort-serving-endpoint-pp
+      pipeline_pause_status: PAUSED
+      secret_scope: scf-cohort-preprod
 
   prod:
     mode: production
     workspace:
       host: https://dbc-a2b9471c-0cac.cloud.databricks.com
       root_path: /Shared/.bundle/scf_cohort_matrix/${bundle.target}
+    # Service principal that owns prod job runs — authenticated via OIDC
+    # from GitHub Actions (spn-prod). No PAT or client_secret stored in repo.
+    run_as:
+      service_principal_name: 768cb535-d83e-4628-9ece-96f44c177f2f
     variables:
       environment: prod
       catalog: pd_dtl_ds
@@ -47,5 +75,4 @@ targets:
       notification_webhook_url: ""
       serving_endpoint_name: scf-cohort-serving-endpoint
       pipeline_pause_status: UNPAUSED
-    run_as:
-      service_principal_name: 768cb535-d83e-4628-9ece-96f44c177f2f
+      secret_scope: scf-cohort-prod

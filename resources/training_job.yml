@@ -32,9 +32,9 @@ resources:
       notification_settings:
         no_alert_for_canceled_runs: false
 
-      # Weekly retrain, Monday 03:00 UTC - adjust to your data refresh cadence.
+      # Quarterly retrain: 1st of Jan, Apr, Jul, Oct at 03:00 UTC.
       schedule:
-        quartz_cron_expression: "0 0 3 ? * MON"
+        quartz_cron_expression: "0 0 3 1 1,4,7,10 ?"
         timezone_id: "UTC"
         pause_status: ${var.pipeline_pause_status}
 
@@ -64,6 +64,20 @@ resources:
           # data_ingestion resolve fixtures/savingscashflow/*.csv regardless
           # of dev/prod deploy location, without hardcoding a path.
           default: ${workspace.file_path}
+        - name: redshift_host
+          default: ""
+        - name: redshift_port
+          default: "5439"
+        - name: redshift_db
+          default: ""
+        - name: redshift_schema
+          default: "sales"
+        - name: redshift_table
+          default: "transactions"
+        - name: join_key
+          default: "account_id"
+        - name: as_of_date
+          default: ""
 
       environments:
         - environment_key: default
@@ -71,7 +85,32 @@ resources:
             environment_version: "2"
 
       tasks:
+        # Feature engineering from Redshift sales data — runs before data
+        # ingestion so enriched features are available for model training.
+        # Skip by leaving redshift_host blank (task fails fast if host empty).
+        - task_key: feature_engineering_redshift
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/00_feature_engineering_redshift.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema:  "{{job.parameters.schema}}"
+              redshift_host:   "{{job.parameters.redshift_host}}"
+              redshift_port:   "{{job.parameters.redshift_port}}"
+              redshift_db:     "{{job.parameters.redshift_db}}"
+              redshift_schema: "{{job.parameters.redshift_schema}}"
+              redshift_table:  "{{job.parameters.redshift_table}}"
+              join_key:        "{{job.parameters.join_key}}"
+              as_of_date:      "{{job.parameters.as_of_date}}"
+              secret_scope:    ${var.secret_scope}
+          timeout_seconds: 3600
+
         - task_key: data_ingestion
+          depends_on:
+            - task_key: feature_engineering_redshift
           environment_key: default
           max_retries: 2
           min_retry_interval_millis: 300000
@@ -98,9 +137,23 @@ resources:
               schema: "{{job.parameters.schema}}"
           timeout_seconds: 3600
 
-        - task_key: model_training
+        - task_key: data_validation
           depends_on:
             - task_key: data_preprocessing
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/02b_data_validation.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+          timeout_seconds: 1800
+
+        - task_key: model_training
+          depends_on:
+            - task_key: data_validation
           environment_key: default
           max_retries: 1
           min_retry_interval_millis: 600000
@@ -127,9 +180,64 @@ resources:
               schema: "{{job.parameters.schema}}"
           timeout_seconds: 3600
 
-        - task_key: model_registration
+        # Model Validation Job — checks description, MAPE gate, business
+        # metrics (projected balance Challenger vs Champion), product coverage.
+        # Sets validation_passed task value consumed by check_validation_gate.
+        - task_key: model_validation
           depends_on:
             - task_key: model_evaluation
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/04b_model_validation.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              model_name: "{{job.parameters.model_name}}"
+          timeout_seconds: 3600
+
+        # Condition gate: only proceed to model_registration if validation passed.
+        # Rejected challengers are tagged by 05_model_registration when
+        # validation_passed=false flows through.
+        - task_key: check_validation_gate
+          depends_on:
+            - task_key: model_validation
+          condition_task:
+            op: "EQUAL_TO"
+            left: "{{tasks.model_validation.values.validation_passed}}"
+            right: "true"
+
+        # FMC Second-Line Validation Gate — human-in-the-loop.
+        # Writes PENDING to model_approvals, notifies FMC via Teams/email,
+        # then polls for APPROVED/REJECTED for up to fmc_timeout_minutes.
+        # FMC reviewer runs fmc_approve.py separately to record their decision.
+        # Task timeout set to 25h to allow a full business day for sign-off.
+        - task_key: fmc_validation_gate
+          depends_on:
+            - task_key: check_validation_gate
+              outcome: "true"
+          environment_key: default
+          max_retries: 0
+          notebook_task:
+            notebook_path: ../src/training/05a_fmc_validation_gate.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              model_name: "{{job.parameters.model_name}}"
+              fmc_timeout_minutes: "1440"
+              notification_email: ${var.notification_email}
+              notification_webhook_url: "{{job.parameters.notification_webhook_url}}"
+          timeout_seconds: 90000    # 25h — covers full business day sign-off window
+          email_notifications:
+            on_failure:
+              - ${var.notification_email}
+
+        - task_key: model_registration
+          depends_on:
+            - task_key: fmc_validation_gate
+          run_if: ALL_SUCCESS
           environment_key: default
           max_retries: 1
           min_retry_interval_millis: 300000
@@ -181,9 +289,28 @@ resources:
               serving_endpoint_name: "{{job.parameters.serving_endpoint_name}}"
           timeout_seconds: 900
 
-        - task_key: confirmation_mail
+        # Auto rollback guard: reverts endpoint to prior champion if smoke
+        # test failed, and writes rollback_events audit table regardless.
+        - task_key: auto_rollback_guard
           depends_on:
             - task_key: smoke_test_serving_endpoint
+          run_if: ALL_DONE
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 120000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/09_auto_rollback_guard.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              model_name: "{{job.parameters.model_name}}"
+              serving_endpoint_name: "{{job.parameters.serving_endpoint_name}}"
+          timeout_seconds: 900
+
+        - task_key: confirmation_mail
+          depends_on:
+            - task_key: auto_rollback_guard
           environment_key: default
           max_retries: 1
           min_retry_interval_millis: 120000

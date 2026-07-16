@@ -45,8 +45,10 @@ resources:
           default: ${var.environment}
         - name: notification_webhook_url
           default: ${var.notification_webhook_url}
-        - name: bundle_root
-          default: ${workspace.file_path}
+        - name: volume_path
+          default: /Volumes/preprod_catalog/ml_workspace/data_scientists/SCF
+        - name: cutoff_period
+          default: "2025-01"
 
       environments:
         - environment_key: default
@@ -64,7 +66,7 @@ resources:
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
-              bundle_root: "{{job.parameters.bundle_root}}"
+              volume_path: "{{job.parameters.volume_path}}"
           timeout_seconds: 3600
 
         - task_key: data_preprocessing
@@ -186,3 +188,31 @@ resources:
               notification_webhook_url: "{{job.parameters.notification_webhook_url}}"
           timeout_seconds: 900
           run_if: ALL_DONE
+
+        # Condition gate: only proceed to auto_retrain if retraining_trigger
+        # set retrain_recommended=true. Uses Databricks condition_task so the
+        # run_job_task below only fires when the signal is actually raised,
+        # without needing any custom API calls inside the notebook.
+        - task_key: check_retrain_flag
+          depends_on:
+            - task_key: retraining_trigger
+          condition_task:
+            op: "EQUAL_TO"
+            left: "{{tasks.retraining_trigger.values.retrain_recommended}}"
+            right: "true"
+
+        # Auto-trigger the full training pipeline when check_retrain_flag passes.
+        # run_if: ALL_SUCCESS means this task is SKIPPED (not failed) when
+        # retrain_recommended=false, so confirmation_mail still completes cleanly.
+        - task_key: auto_retrain
+          depends_on:
+            - task_key: check_retrain_flag
+              outcome: "true"
+          run_job_task:
+            job_id: ${resources.jobs.scf_training_pipeline.id}
+            job_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              model_name: "{{job.parameters.model_name}}"
+              cutoff_period: "{{job.parameters.cutoff_period}}"
+              notification_webhook_url: "{{job.parameters.notification_webhook_url}}"

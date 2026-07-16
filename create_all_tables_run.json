@@ -1,0 +1,25 @@
+{
+  "run_name": "create_all_tables",
+  "tasks": [
+    {
+      "task_key": "create_tables",
+      "environment_key": "default",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/capukvelu@gmail.com/.bundle/scf_cohort_matrix/dev/files/src/dev/create_all_tables.py",
+        "base_parameters": {
+          "catalog": "pd_dtl_ds_dev",
+          "schema": "savings_cashflow"
+        }
+      }
+    }
+  ],
+  "environments": [
+    {
+      "environment_key": "default",
+      "spec": {
+        "client": "1",
+        "dependencies": []
+      }
+    }
+  ]
+}

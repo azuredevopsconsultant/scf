@@ -1,0 +1,60 @@
+# =============================================================================
+# INTEGRATION TEST JOB
+# Runs end-to-end integration tests in the preprod (staging) workspace.
+# Triggered by GitHub Actions on release/* branches before prod deploy.
+# All 5 test stages must pass:
+#   1. Model training tests
+#   2. Model validation tests
+#   3. Model deployment tests
+#   4. Model inference tests
+#   5. Monitoring tests
+# =============================================================================
+resources:
+  jobs:
+    scf_integration_tests:
+      name: "[${bundle.target}] SCF Cohort - Integration Tests (CI)"
+
+      tags:
+        project: scf_cohort_matrix
+        pipeline_type: integration_test
+        environment: ${var.environment}
+
+      email_notifications:
+        on_failure:
+          - ${var.notification_email}
+        no_alert_for_skipped_runs: true
+
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: model_name
+          default: ${var.model_name}
+        - name: serving_endpoint_name
+          default: ${var.serving_endpoint_name}
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+
+      tasks:
+        - task_key: integration_tests
+          environment_key: default
+          max_retries: 0
+          notebook_task:
+            notebook_path: ../tests/integration_test.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema:  "{{job.parameters.schema}}"
+              model_name: "{{job.parameters.model_name}}"
+              serving_endpoint_name: "{{job.parameters.serving_endpoint_name}}"
+          timeout_seconds: 1800
+          email_notifications:
+            on_failure:
+              - ${var.notification_email}

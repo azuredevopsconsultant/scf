@@ -58,4 +58,4 @@ def compute_drift_report(
 
 
 def any_alerts(drift_report: pd.DataFrame) -> bool:
-    return (drift_report["status"] == "ALERT").any()
+    return bool((drift_report["status"] == "ALERT").any())

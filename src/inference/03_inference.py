@@ -1,9 +1,26 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 03 - Inferencing
-# MAGIC Loads the model currently aliased `champion` (never `challenger` -
-# MAGIC production traffic should only ever see a promoted model) and projects
-# MAGIC balances/flows for the latest reporting periods.
+# MAGIC # 03 - Batch Inference (Champion Model)
+# MAGIC
+# MAGIC Implements the MLOps batch inference pattern shown below:
+# MAGIC
+# MAGIC ```
+# MAGIC Feature Tables (UC)
+# MAGIC      │
+# MAGIC      ▼
+# MAGIC Champion Model loaded from UC Model Registry
+# MAGIC      │  (applyInPandas per product — Spark-distributed)
+# MAGIC      ▼
+# MAGIC Inference Tables (UC)  ──▶  Analytics / Retention Strategy
+# MAGIC ```
+# MAGIC
+# MAGIC Key design decisions:
+# MAGIC - Model loaded by **alias** (`@champion`) so promotion is the only deploy step.
+# MAGIC - `applyInPandas` grouped by product = Spark-native distributed inference;
+# MAGIC   each executor runs the GLM projection for one product in parallel.
+# MAGIC - MLflow run logged per inference batch for full lineage in Unity Catalog.
+# MAGIC - Predictions written as append-only Delta table with audit columns
+# MAGIC   (scored_at, model_name, model_version, model_alias) for traceability.
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
@@ -15,35 +32,204 @@ schema = dbutils.widgets.get("schema")
 model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
 model_alias = dbutils.widgets.get("model_alias") or "champion"
 
-import sys
+import sys, datetime
 sys.path.append("../..")
 from src.common.config import get_config
 import mlflow
+from mlflow import MlflowClient
 import pandas as pd
+from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    StructType, StructField, StringType, DoubleType, LongType
+)
 
 mlflow.set_registry_uri("databricks-uc")
 cfg = get_config(catalog, schema)
 
 # COMMAND ----------
+# Load Champion model from Unity Catalog Model Registry.
+# Always load by alias - version number is resolved here for lineage only.
 model_uri = f"models:/{model_name}@{model_alias}"
 model = mlflow.pyfunc.load_model(model_uri)
-print(f"Loaded {model_uri}")
+print(f"Loaded: {model_uri}")
+
+# Resolve the actual numeric version for audit/lineage columns
+client = MlflowClient()
+try:
+    mv = client.get_model_version_by_alias(model_name, model_alias)
+    model_version = mv.version
+    model_run_id = mv.run_id
+    print(f"Model version: {model_version}  |  run_id: {model_run_id}")
+except Exception:
+    model_version = "unknown"
+    model_run_id = None
 
 # COMMAND ----------
-features_df = spark.table(cfg.inference_features).toPandas()
-features_df['reporting_period'] = features_df['reporting_period'].astype(str)
-
-predictions = model.predict(features_df)
-assert not predictions.empty, "Model returned 0 predictions - check inference_features coverage"
+# Load inference features from Unity Catalog as Spark DataFrame.
+# Keeping it as Spark DF until the applyInPandas step avoids a full
+# driver-side toPandas() on what can be a large table in production.
+features_sdf = spark.table(cfg.inference_features)
+n_feature_rows = features_sdf.count()
+n_products = features_sdf.select("product").distinct().count()
+print(f"Inference features: {n_feature_rows} rows  |  {n_products} products")
 
 # COMMAND ----------
-predictions['scored_at'] = pd.Timestamp.utcnow().isoformat()
-predictions['model_name'] = model_name
-predictions['model_alias'] = model_alias
+# Define output schema for applyInPandas.
+# Matches the Excel GLM_Testing_Results output exactly:
+#   balance_pred, receipts_pred, withdrawals_pred, transfers_pred  ← GLM predictions
+#   balance, receipts, withdrawals, transfers                      ← actuals (for APE)
+#   ape_balance, ape_receipts, ape_withdrawals, ape_transfers      ← |actual-pred|/actual
+#   rec_pct_pred, outflow_pct_pred, transfer_pct_pred             ← ratio proportions used
+PREDICTION_SCHEMA = StructType([
+    StructField("product",            StringType(), True),
+    StructField("cohort",             StringType(), True),
+    StructField("reporting_period",   StringType(), True),
+    StructField("months_since_start", LongType(),   True),
+    # ── Predicted values ────────────────────────────────────────────────
+    StructField("balance_pred",       DoubleType(), True),
+    StructField("receipts_pred",      DoubleType(), True),
+    StructField("withdrawals_pred",   DoubleType(), True),
+    StructField("transfers_pred",     DoubleType(), True),
+    # ── Actuals (joined from input features for APE computation) ────────
+    StructField("balance",            DoubleType(), True),
+    StructField("receipts",           DoubleType(), True),
+    StructField("withdrawals",        DoubleType(), True),
+    StructField("transfers",          DoubleType(), True),
+    # ── APE per row = |actual - pred| / actual  (matches Excel formula) ─
+    StructField("ape_balance",        DoubleType(), True),
+    StructField("ape_receipts",       DoubleType(), True),
+    StructField("ape_withdrawals",    DoubleType(), True),
+    StructField("ape_transfers",      DoubleType(), True),
+    # ── GLM ratio proportions used for this row ──────────────────────────
+    StructField("rec_pct_pred",       DoubleType(), True),
+    StructField("outflow_pct_pred",   DoubleType(), True),
+    StructField("transfer_pct_pred",  DoubleType(), True),
+])
 
-spark.createDataFrame(predictions.astype(str)).write.mode("append").option(
-    "mergeSchema", "true"
-).saveAsTable(cfg.inference_predictions)
+# COMMAND ----------
+# Batch inference using applyInPandas grouped by product.
+# Each executor receives one product's rows as a pandas DataFrame,
+# calls model.predict(), and returns the prediction DataFrame.
+# This is the Spark-native distributed equivalent of the Spark UDF
+# pattern used in Databricks MLOps demos for per-row models.
 
-dbutils.jobs.taskValues.set(key="n_predictions", value=int(len(predictions)))
-print(f"Wrote {len(predictions)} predictions to {cfg.inference_predictions}")
+def predict_product_partition(product_pdf: pd.DataFrame) -> pd.DataFrame:
+    """Applied per product partition by Spark executor."""
+    import numpy as np
+    product_pdf["reporting_period"] = product_pdf["reporting_period"].astype(str)
+    result = model.predict(product_pdf)
+    if result.empty:
+        return pd.DataFrame(columns=[f.name for f in PREDICTION_SCHEMA])
+
+    # Coerce all numeric columns
+    for col in ["balance_pred", "receipts_pred", "withdrawals_pred", "transfers_pred",
+                "balance", "receipts", "withdrawals", "transfers",
+                "rec_pct_pred", "outflow_pct_pred", "transfer_pct_pred"]:
+        result[col] = pd.to_numeric(result.get(col), errors="coerce") if col in result.columns else np.nan
+
+    # Compute APE per row — matches the Excel formula =ABS((actual-pred)/actual)
+    def safe_ape(actual, pred):
+        actual = pd.to_numeric(actual, errors="coerce")
+        pred   = pd.to_numeric(pred,   errors="coerce")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ape = np.where(actual != 0, np.abs((actual - pred) / actual), np.nan)
+        return ape
+
+    result["ape_balance"]     = safe_ape(result.get("balance"),     result.get("balance_pred"))
+    result["ape_receipts"]    = safe_ape(result.get("receipts"),    result.get("receipts_pred"))
+    result["ape_withdrawals"] = safe_ape(result.get("withdrawals"), result.get("withdrawals_pred"))
+    result["ape_transfers"]   = safe_ape(result.get("transfers"),   result.get("transfers_pred"))
+
+    result["months_since_start"] = pd.to_numeric(
+        result.get("months_since_start", None), errors="coerce"
+    ).astype("Int64")
+    result["product"]          = result.get("product", product_pdf["product"].iloc[0])
+    result["cohort"]           = result.get("cohort", product_pdf["cohort"].iloc[0] if "cohort" in product_pdf.columns else None)
+    result["reporting_period"] = result.get("reporting_period", "").astype(str)
+    return result[[f.name for f in PREDICTION_SCHEMA]]
+
+predictions_sdf = (
+    features_sdf
+    .groupBy("product")
+    .applyInPandas(predict_product_partition, schema=PREDICTION_SCHEMA)
+)
+
+# COMMAND ----------
+# Add audit columns for model lineage and traceability in Unity Catalog.
+# These columns allow the inference table to answer:
+#   "Which model version produced this row, and when?"
+scored_at = datetime.datetime.utcnow().isoformat()
+
+predictions_sdf = (
+    predictions_sdf
+    .withColumn("scored_at",      F.lit(scored_at))
+    .withColumn("model_name",     F.lit(model_name))
+    .withColumn("model_version",  F.lit(str(model_version)))
+    .withColumn("model_alias",    F.lit(model_alias))
+)
+
+n_predictions = predictions_sdf.count()
+assert n_predictions > 0, (
+    "Batch inference returned 0 predictions. "
+    "Check inference_features coverage and champion model product tables."
+)
+print(f"Predictions generated: {n_predictions} rows across {n_products} products")
+
+# COMMAND ----------
+# Write to Unity Catalog inference table (append-only Delta).
+# mergeSchema allows the table to evolve if BuildProjections adds columns.
+(
+    predictions_sdf
+    .write
+    .mode("append")
+    .option("mergeSchema", "true")
+    .saveAsTable(cfg.inference_predictions)
+)
+print(f"Written to: {cfg.inference_predictions}")
+
+# COMMAND ----------
+# Log inference run to MLflow for Unity Catalog lineage.
+# This ties the inference batch back to the champion model run so
+# Catalog Explorer shows the full lineage: source table → model → output table.
+mlflow.set_experiment(f"/Shared/scf_cohort/{catalog}_inference")
+with mlflow.start_run(run_name=f"batch_inference_{scored_at[:10]}"):
+    mlflow.set_tag("model_alias", model_alias)
+    mlflow.set_tag("model_version", str(model_version))
+    mlflow.set_tag("catalog", catalog)
+    mlflow.log_param("model_uri", model_uri)
+    mlflow.log_param("model_name", model_name)
+    mlflow.log_param("n_feature_rows", n_feature_rows)
+    mlflow.log_param("n_products", n_products)
+    mlflow.log_metric("n_predictions", n_predictions)
+    if model_run_id:
+        mlflow.set_tag("champion_run_id", model_run_id)
+
+# COMMAND ----------
+# Pass metrics forward to model_monitoring task via task values.
+dbutils.jobs.taskValues.set(key="n_predictions",   value=int(n_predictions))
+dbutils.jobs.taskValues.set(key="n_products",      value=int(n_products))
+dbutils.jobs.taskValues.set(key="scored_at",       value=scored_at)
+dbutils.jobs.taskValues.set(key="model_version",   value=str(model_version))
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Prediction Preview
+# MAGIC Shows a sample of the generated predictions per product.
+# MAGIC The full table is available in Unity Catalog at:
+# MAGIC `{catalog}.{schema}.inference_predictions`
+
+# COMMAND ----------
+display(
+    predictions_sdf
+    .select("product", "cohort", "reporting_period", "months_since_start",
+            "balance_pred", "receipts_pred", "model_version", "scored_at")
+    .orderBy("product", "cohort", "reporting_period")
+    .limit(100)
+)
+print(f"\nBatch inference complete.")
+print(f"  Champion model : {model_name} v{model_version} (@{model_alias})")
+print(f"  Rows scored    : {n_predictions}")
+print(f"  Products       : {n_products}")
+print(f"  Output table   : {cfg.inference_predictions}")
+print(f"  Scored at      : {scored_at}")
+

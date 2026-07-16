@@ -1,8 +1,9 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 07 - Deploy/Update Serving Endpoint
-# MAGIC Deploys the current champion (or challenger fallback) to the configured
-# MAGIC Databricks Model Serving endpoint.
+# MAGIC Deploys with gradual traffic rollout: 90% champion / 10% challenger.
+# MAGIC When no champion exists yet (first ever run), 100% goes to challenger.
+# MAGIC Traffic weights are logged as task values for the smoke test to verify.
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
@@ -22,32 +23,67 @@ from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedEntity
 mlflow.set_registry_uri("databricks-uc")
 
 
-def resolve_served_version(full_model_name: str) -> tuple[str, str]:
+def resolve_traffic_config(full_model_name: str) -> tuple[list[ServedEntityInput], dict]:
+    """
+    Returns served_entities with gradual traffic split:
+      - champion=90% / challenger=10% when both aliases exist
+      - challenger=100% when no champion exists yet (first training run)
+    """
     client = mlflow.MlflowClient(registry_uri="databricks-uc")
-    for alias in ["champion", "challenger"]:
-        try:
-            version = client.get_model_version_by_alias(full_model_name, alias).version
-            return str(version), alias
-        except Exception:
-            pass
-    raise RuntimeError(
-        f"No champion/challenger alias found for {full_model_name}. "
-        "Ensure model_registration ran successfully."
-    )
+    entities = []
+    traffic_map = {}
+
+    try:
+        champ_version = client.get_model_version_by_alias(full_model_name, "champion").version
+        chal_version = client.get_model_version_by_alias(full_model_name, "challenger").version
+
+        if champ_version == chal_version:
+            # Same version promoted immediately - no split needed
+            entities.append(ServedEntityInput(
+                entity_name=full_model_name, entity_version=champ_version,
+                workload_size="Small", scale_to_zero_enabled=True,
+                traffic_percentage=100,
+            ))
+            traffic_map = {"champion": 100}
+        else:
+            # Gradual rollout: 90% champion, 10% challenger
+            entities.append(ServedEntityInput(
+                entity_name=full_model_name, entity_version=champ_version,
+                workload_size="Small", scale_to_zero_enabled=True,
+                traffic_percentage=90,
+            ))
+            entities.append(ServedEntityInput(
+                entity_name=full_model_name, entity_version=chal_version,
+                workload_size="Small", scale_to_zero_enabled=True,
+                traffic_percentage=10,
+            ))
+            traffic_map = {"champion": 90, "challenger": 10}
+            print(f"Gradual rollout: champion v{champ_version}=90%  challenger v{chal_version}=10%")
+
+    except Exception:
+        # No champion yet - first run, send 100% to challenger
+        chal_version = client.get_model_version_by_alias(full_model_name, "challenger").version
+        entities.append(ServedEntityInput(
+            entity_name=full_model_name, entity_version=chal_version,
+            workload_size="Small", scale_to_zero_enabled=True,
+            traffic_percentage=100,
+        ))
+        traffic_map = {"challenger": 100}
+        print(f"No champion yet - routing 100% to challenger v{chal_version}")
+
+    return entities, traffic_map
 
 
-served_version, alias_used = resolve_served_version(model_name)
+served_entities, traffic_map = resolve_traffic_config(model_name)
 w = WorkspaceClient()
-config = EndpointCoreConfigInput(
-    served_entities=[
-        ServedEntityInput(
-            entity_name=model_name,
-            entity_version=served_version,
-            workload_size="Small",
-            scale_to_zero_enabled=True,
-        )
-    ]
-)
+config = EndpointCoreConfigInput(served_entities=served_entities)
+
+import datetime as dt
+import pandas as pd
+import sys
+sys.path.append("../..")
+from src.common.config import get_config
+cfg = get_config(catalog, schema)
 
 action = "updated"
 try:
@@ -60,12 +96,24 @@ except Exception:
     action = "created"
     w.serving_endpoints.create_and_wait(name=serving_endpoint_name, config=config)
 
-print(
-    f"Serving endpoint {serving_endpoint_name} {action}: "
-    f"{model_name} v{served_version} ({alias_used})"
-)
+print(f"Serving endpoint '{serving_endpoint_name}' {action}.")
+print(f"Traffic split: {traffic_map}")
+
+# Write deployment_history audit table — every endpoint create/update recorded.
+deployment_row = pd.DataFrame([{
+    "endpoint_name":      serving_endpoint_name,
+    "action":             action,
+    "model_name":         model_name,
+    "traffic_map":        str(traffic_map),
+    "deployed_at":        dt.datetime.utcnow().isoformat(),
+    "catalog":            catalog,
+    "schema":             schema,
+}])
+spark.createDataFrame(deployment_row).write.mode("append").option(
+    "mergeSchema", "true"
+).saveAsTable(cfg.deployment_history)
+print(f"deployment_history written: {action} at {deployment_row['deployed_at'].iloc[0]}")
 
 dbutils.jobs.taskValues.set(key="serving_endpoint_name", value=serving_endpoint_name)
-dbutils.jobs.taskValues.set(key="serving_model_version", value=served_version)
-dbutils.jobs.taskValues.set(key="serving_alias_used", value=alias_used)
+dbutils.jobs.taskValues.set(key="traffic_map", value=str(traffic_map))
 dbutils.jobs.taskValues.set(key="serving_action", value=action)
