@@ -14,6 +14,25 @@ from dataclasses import dataclass
 class Config:
     catalog: str
     schema: str
+    secret_scope: str = "scf-cohort-notifications"  # overridden per env via job widget
+    feature_schema: str = "feature_store"            # separate schema for all feature tables
+    model_schema: str   = "ml_models"                # separate schema for model registry artifacts
+
+    # ---- Feature Store schema tables -----------------------------------------
+    @property
+    def feature_store_cohort(self) -> str:
+        """Existing 3 cohort features (int_rate, best_buy, delta_to_best_buy etc.)"""
+        return f"{self.catalog}.{self.feature_schema}.feature_store_cohort"
+
+    @property
+    def sales_features(self) -> str:
+        """Redshift sales aggregates: sum_of_sales, avg_sale_amount, sale_count etc."""
+        return f"{self.catalog}.{self.feature_schema}.sales_features"
+
+    @property
+    def feature_store_enriched(self) -> str:
+        """Enriched: existing 3 features + Redshift sales aggregates joined."""
+        return f"{self.catalog}.{self.feature_schema}.feature_store_enriched"
 
     # ---- Bronze / source tables (replace the original s3:// parquet reads) --
     @property
@@ -37,6 +56,16 @@ class Config:
     def feature_store_table(self) -> str:
         return f"{self.catalog}.{self.schema}.feature_store_cohort"
 
+    @property
+    def feature_store_enriched(self) -> str:
+        """Feature store enriched with Redshift sales aggregate features."""
+        return f"{self.catalog}.{self.schema}.feature_store_enriched"
+
+    @property
+    def sales_features(self) -> str:
+        """Raw Redshift sales aggregate features before joining to cohort features."""
+        return f"{self.catalog}.{self.schema}.sales_features"
+
     # ---- Training artifacts ---------------------------------------------------
     @property
     def training_dataset(self) -> str:
@@ -49,6 +78,32 @@ class Config:
     @property
     def dataset_versions(self) -> str:
         return f"{self.catalog}.{self.schema}.dataset_versions"
+
+    # ---- Audit / governance tables (required for regulatory audit) -----------
+    @property
+    def model_approvals(self) -> str:
+        """FMC approval/rejection decision, approver name, model version, timestamp."""
+        return f"{self.catalog}.{self.schema}.model_approvals"
+
+    @property
+    def model_cards(self) -> str:
+        """Auto-generated card: model name, version, run ID, features, labels, portfolio MAPE."""
+        return f"{self.catalog}.{self.schema}.model_cards"
+
+    @property
+    def deployment_history(self) -> str:
+        """Every endpoint create/update: version deployed, rollout %, timestamp."""
+        return f"{self.catalog}.{self.schema}.deployment_history"
+
+    @property
+    def rollback_events(self) -> str:
+        """Rollback reason, version reverted to, smoke test result."""
+        return f"{self.catalog}.{self.schema}.rollback_events"
+
+    @property
+    def training_feature_snapshots(self) -> str:
+        """Full feature snapshot frozen at training time — survives Delta VACUUM."""
+        return f"{self.catalog}.{self.schema}.training_feature_snapshots"
 
     # ---- Inference outputs ------------------------------------------------------
     @property
@@ -87,5 +142,17 @@ class Config:
     RETRAIN_MAPE_THRESHOLD: float = 20.0
 
 
-def get_config(catalog: str, schema: str) -> Config:
-    return Config(catalog=catalog, schema=schema)
+def get_config(
+    catalog: str,
+    schema: str,
+    secret_scope: str   = "scf-cohort-notifications",
+    feature_schema: str = "feature_store",
+    model_schema: str   = "ml_models",
+) -> Config:
+    return Config(
+        catalog=catalog,
+        schema=schema,
+        secret_scope=secret_scope,
+        feature_schema=feature_schema,
+        model_schema=model_schema,
+    )

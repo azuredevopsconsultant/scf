@@ -5,16 +5,21 @@ Custom email helper for CONDITIONAL, content-rich mails (drift alert body,
 confirmation-mail run summary) that native job email_notifications can't
 express, since those only fire on fixed run-state events with a fixed body.
 
-Credentials are pulled from a Databricks secret scope - never hardcode SMTP
-creds in source. Create the scope once per workspace:
+Credentials are pulled from a Databricks secret scope — one scope per
+environment so dev/preprod/prod secrets are fully isolated:
 
-    databricks secrets create-scope scf-cohort-notifications
-    databricks secrets put-secret scf-cohort-notifications smtp-user
-    databricks secrets put-secret scf-cohort-notifications smtp-password
+  dev     → scope: scf-cohort-dev
+  preprod → scope: scf-cohort-preprod
+  prod    → scope: scf-cohort-prod
 
-For most banks, swap this for your internal mail relay / Databricks SQL
-Alerts / a Slack or Teams webhook - the send_email() signature is kept small
-on purpose so it's a one-function change.
+Create scopes once per workspace (see scripts/setup_secret_scopes.sh):
+    databricks secrets create-scope scf-cohort-dev
+    databricks secrets put-secret scf-cohort-dev smtp-user     --string-value "..."
+    databricks secrets put-secret scf-cohort-dev smtp-password --string-value "..."
+    databricks secrets put-secret scf-cohort-dev webhook-url   --string-value "..."
+
+The secret_scope is passed via cfg.secret_scope (set from the DAB
+secret_scope variable, which differs per target in databricks.yml).
 """
 import smtplib
 import json
@@ -24,20 +29,28 @@ from email.mime.text import MIMEText
 
 from databricks.sdk.runtime import dbutils
 
-SECRET_SCOPE = "scf-cohort-notifications"
+# Default scope — overridden at call sites by passing secret_scope=cfg.secret_scope
+_DEFAULT_SCOPE = "scf-cohort-notifications"
 SMTP_HOST = "smtp.office365.com"
 SMTP_PORT = 587
 
 
-def send_email(to_addresses: list[str], subject: str, html_body: str, from_address: str = None):
-    smtp_user = dbutils.secrets.get(SECRET_SCOPE, "smtp-user")
-    smtp_password = dbutils.secrets.get(SECRET_SCOPE, "smtp-password")
-    from_address = from_address or smtp_user
+def send_email(
+    to_addresses: list[str],
+    subject: str,
+    html_body: str,
+    from_address: str = None,
+    secret_scope: str = _DEFAULT_SCOPE,
+):
+    """Send HTML email using SMTP credentials from the environment secret scope."""
+    smtp_user     = dbutils.secrets.get(secret_scope, "smtp-user")
+    smtp_password = dbutils.secrets.get(secret_scope, "smtp-password")
+    from_address  = from_address or smtp_user
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = from_address
-    msg["To"] = ", ".join(to_addresses)
+    msg["From"]    = from_address
+    msg["To"]      = ", ".join(to_addresses)
     msg.attach(MIMEText(html_body, "html"))
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:

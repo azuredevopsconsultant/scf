@@ -2,13 +2,14 @@
 # MAGIC %md
 # MAGIC # 02 - Data Preprocessing (Training)
 # MAGIC Ports the original notebook's "Data Pre-processing" + "Build Cohort
-# MAGIC Matrix" sections (cells 6-45): best-buy category mapping, date -> period
+# MAGIC Matrix" sections: best-buy category mapping, date -> period
 # MAGIC conversion, merges, `months_since_start`, cohort-level aggregation,
-# MAGIC interim ratio construction (`rec_prop`, `outflow_prop`,
-# MAGIC `withdrawal_prop_of_outflow`), and the increasing-cohort-size exclusion
-# MAGIC rule. Runs on the driver with pandas (as the original did) since cohort
-# MAGIC volumes are small relative to cluster memory; swap to pandas-on-Spark if
-# MAGIC that stops being true.
+# MAGIC interim ratio construction, and the increasing-cohort-size exclusion
+# MAGIC rule.
+# MAGIC
+# MAGIC Feature store write uses **Databricks Feature Engineering Client**
+# MAGIC (`feature_engineering.write_table`) for native Unity Catalog lineage
+# MAGIC tracking (Catalog Explorer shows source table → feature table → model).
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
@@ -147,9 +148,42 @@ spark.createDataFrame(agg_df).write.mode("overwrite").option(
     "mergeSchema", "true"
 ).saveAsTable(cfg.silver_agg_cohort)
 
-spark.createDataFrame(agg_df).write.mode("overwrite").option(
-    "mergeSchema", "true"
-).saveAsTable(cfg.feature_store_table)
+# Write to Feature Store via Databricks Feature Engineering Client.
+# This registers feature table metadata in Unity Catalog so the lineage
+# graph shows: raw_base_data → feature_store_cohort → scf_cohort_model.
+# Primary key = (cohort, product, months_since_start) — uniquely identifies
+# one row in the cohort projection matrix.
+try:
+    from databricks.feature_engineering import FeatureEngineeringClient
+    fe = FeatureEngineeringClient()
+    feature_sdf = spark.createDataFrame(agg_df)
+    try:
+        # Create table on first run; merge on subsequent runs
+        fe.create_table(
+            name=cfg.feature_store_table,
+            primary_keys=["cohort", "product", "months_since_start"],
+            df=feature_sdf,
+            description=(
+                "Cohort-level engineered features for the SCF GLM model. "
+                "Primary key: cohort × product × months_since_start. "
+                "Written by training/02_data_preprocessing.py."
+            ),
+        )
+        print(f"Feature table created: {cfg.feature_store_table}")
+    except Exception:
+        # Table exists — merge new data
+        fe.write_table(
+            name=cfg.feature_store_table,
+            df=feature_sdf,
+            mode="merge",
+        )
+        print(f"Feature table merged: {cfg.feature_store_table}")
+except ImportError:
+    # Fallback for environments without the Feature Engineering SDK
+    spark.createDataFrame(agg_df).write.mode("overwrite").option(
+        "mergeSchema", "true"
+    ).saveAsTable(cfg.feature_store_table)
+    print(f"Feature Engineering SDK not available — wrote plain Delta: {cfg.feature_store_table}")
 
 record_dataset_version(
     spark=spark,
@@ -158,6 +192,20 @@ record_dataset_version(
     dataset_name="training_silver_agg_cohort",
     environment=catalog,
 )
+
+# Write training_feature_snapshots — frozen feature distribution at training time.
+# Stored as a versioned append so it survives Delta VACUUM and allows exact
+# reproduction of any historical training run via VERSION AS OF.
+import datetime as _dt
+agg_snap = agg_df.copy()
+agg_snap["snapshot_timestamp"] = _dt.datetime.utcnow().isoformat()
+agg_snap["catalog"] = catalog
+agg_snap["schema"] = schema
+
+spark.createDataFrame(agg_snap.astype(str)).write.mode("append").option(
+    "mergeSchema", "true"
+).saveAsTable(cfg.training_feature_snapshots)
+print(f"training_feature_snapshots written: {len(agg_snap)} rows frozen at training time")
 
 print(f"silver_agg_cohort rows: {len(agg_df)}")
 assert len(agg_df) > 0, "Preprocessing produced 0 rows - aborting pipeline"

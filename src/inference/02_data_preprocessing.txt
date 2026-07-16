@@ -2,11 +2,11 @@
 # MAGIC %md
 # MAGIC # 02 - Data Preprocessing (Inference)
 # MAGIC Identical feature pipeline to training (same merges, `months_since_start`,
-# MAGIC cohort aggregation, `delta_to_best_buy`/`dbb_range` binning). Keeping
-# MAGIC train/inference preprocessing as near-duplicates that both call the same
-# MAGIC bucketing constants (`src/common/glm_core.RATE_BINS/RATE_LABELS`) is what
-# MAGIC prevents train/serve skew here, since there's no sklearn Pipeline object
-# MAGIC to persist - the "features" are the pandas transforms themselves.
+# MAGIC cohort aggregation, `delta_to_best_buy`/`dbb_range` binning).
+# MAGIC
+# MAGIC Feature table write uses **Databricks Feature Engineering Client**
+# MAGIC (`fe.write_table(mode="merge")`) so Unity Catalog lineage tracks:
+# MAGIC raw_base_data → inference_features → inference_predictions → model.
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
@@ -79,6 +79,44 @@ agg_df.columns = [
 agg_df = agg_df.sort_values(['cohort', 'product', 'months_since_start'])
 
 agg_df['balance_lag_1'] = agg_df.groupby(['cohort', 'product'])['balance'].shift(1)
+
+# Seed balance_lag_1 for the first inference period of each cohort×product.
+# The inference batch only contains new months, so shift(1) produces NaN for
+# the earliest period in the batch. Without this seed the model chains NaN
+# predictions across every month (it overwrites balance_lag_1 with its own
+# predicted balance each step). We pull the last known balance from
+# silver_agg_cohort (the training Silver table) to fill those gaps.
+try:
+    import numpy as np
+    train_silver = spark.table(cfg.silver_agg_cohort).toPandas()
+    train_silver['reporting_period'] = train_silver['reporting_period'].astype(str)
+    train_silver['cohort'] = train_silver['cohort'].astype(str)
+    # Latest training balance per cohort×product = the lag seed for month 1 of inference
+    last_train_bal = (
+        train_silver.sort_values('reporting_period')
+        .groupby(['cohort', 'product'])['balance']
+        .last()
+        .reset_index()
+        .rename(columns={'balance': 'balance_lag_seed'})
+    )
+    agg_df['cohort_str'] = agg_df['cohort'].astype(str)
+    agg_df['product_str'] = agg_df['product'].astype(str)
+    agg_df = agg_df.merge(last_train_bal,
+                          left_on=['cohort_str', 'product_str'],
+                          right_on=['cohort', 'product'],
+                          how='left',
+                          suffixes=('', '_seed'))
+    # Fill NaN lags (first period only) with the training seed
+    mask = agg_df['balance_lag_1'].isna()
+    agg_df.loc[mask, 'balance_lag_1'] = agg_df.loc[mask, 'balance_lag_seed']
+    agg_df.drop(columns=['cohort_str', 'product_str', 'cohort_seed',
+                          'product_seed', 'balance_lag_seed'],
+                errors='ignore', inplace=True)
+    print(f"Seeded balance_lag_1 for {mask.sum()} rows from silver_agg_cohort")
+except Exception as e:
+    print(f"WARNING: could not seed balance_lag_1 from silver_agg_cohort: {e}. "
+          "First inference period predictions may be NaN.")
+
 agg_df.loc[agg_df['balance_lag_1'] == 0, 'balance_lag_1'] = 1
 agg_df['delta_to_best_buy'] = agg_df['int_rate'] - agg_df['best_buy']
 agg_df['dbb_range'] = pd.cut(agg_df['delta_to_best_buy'], bins=RATE_BINS, labels=RATE_LABELS)
@@ -89,9 +127,33 @@ agg_df = agg_df.drop_duplicates(['product', 'cohort', 'months_since_start'])
 agg_df['reporting_period'] = agg_df['reporting_period'].astype(str)
 agg_df['cohort'] = agg_df['cohort'].astype(str)
 
-spark.createDataFrame(agg_df).write.mode("overwrite").option(
-    "mergeSchema", "true"
-).saveAsTable(cfg.inference_features)
+# Write inference features via Feature Engineering Client for UC lineage.
+# mode="merge" upserts on (cohort, product, months_since_start) primary key
+# so each inference batch updates only the new periods.
+inference_sdf = spark.createDataFrame(agg_df)
+try:
+    from databricks.feature_engineering import FeatureEngineeringClient
+    fe = FeatureEngineeringClient()
+    try:
+        fe.create_table(
+            name=cfg.inference_features,
+            primary_keys=["cohort", "product", "months_since_start"],
+            df=inference_sdf,
+            description=(
+                "Inference-ready features for SCF GLM scoring. "
+                "Primary key: cohort × product × months_since_start. "
+                "Written by inference/02_data_preprocessing.py."
+            ),
+        )
+        print(f"Inference feature table created: {cfg.inference_features}")
+    except Exception:
+        fe.write_table(name=cfg.inference_features, df=inference_sdf, mode="merge")
+        print(f"Inference feature table merged: {cfg.inference_features}")
+except ImportError:
+    inference_sdf.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(
+        cfg.inference_features
+    )
+    print(f"Feature Engineering SDK not available — wrote plain Delta: {cfg.inference_features}")
 
 record_dataset_version(
     spark=spark,
