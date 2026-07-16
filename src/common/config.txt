@@ -132,6 +132,13 @@ class Config:
         # Reference (training-time) feature snapshot used as the drift baseline.
         return f"{self.catalog}.{self.schema}.reference_feature_snapshot"
 
+    @property
+    def prediction_reference_data(self) -> str:
+        # Reference (baseline) prediction distribution used for prediction /
+        # output drift. Frozen from the first scored batch, refreshed
+        # deliberately after a validated retrain (never auto-chases the data).
+        return f"{self.catalog}.{self.schema}.reference_prediction_snapshot"
+
     # ---- Thresholds -------------------------------------------------------------
     PSI_WARN_THRESHOLD: float = 0.1
     PSI_ALERT_THRESHOLD: float = 0.25
@@ -140,6 +147,10 @@ class Config:
     ROW_COUNT_DROP_FAIL_THRESHOLD: float = 0.5  # fail if >50% fewer rows than expected
     RETRAIN_NULL_RATE_THRESHOLD: float = 0.1
     RETRAIN_MAPE_THRESHOLD: float = 20.0
+    # GLM extrapolation guard: GLMs extrapolate linearly, so predictions made
+    # where delta_to_best_buy falls outside the training support are unreliable.
+    # Alert when more than this fraction of the batch is out-of-range.
+    EXTRAPOLATION_ALERT_RATE: float = 0.05
 
 
 def get_config(

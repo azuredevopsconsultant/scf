@@ -19,42 +19,140 @@ notification_webhook_url = dbutils.widgets.get("notification_webhook_url")
 
 import sys, datetime
 sys.path.append("../..")
+import pandas as pd
+import pyspark.sql.functions as F
 from src.common.config import get_config
-from src.common.drift_checks import compute_drift_report, any_alerts
+from src.common.drift_checks import compute_drift_report, any_alerts, extrapolation_report
 from src.common.notifications import send_drift_alert, send_webhook_notification
 
 cfg = get_config(catalog, schema)
 
+# Input-feature drift (covariate shift, P(X)).
 DRIFT_COLUMNS = ['int_rate', 'best_buy', 'delta_to_best_buy', 'tenure_months', '#accounts']
+# Prediction / output drift (P(Y-hat)). This is the leading signal - it fires
+# before ground-truth actuals land, which for this cohort model lag by months.
+PREDICTION_DRIFT_COLUMNS = ['balance_pred', 'rec_pct_pred', 'outflow_pct_pred', 'transfer_pct_pred']
+# GLM extrapolation guard is applied to this feature specifically, because the
+# rate environment (delta_to_best_buy) is where the GLM is most likely to be
+# asked to predict outside its training support.
+EXTRAPOLATION_FEATURE = 'delta_to_best_buy'
+# Provenance columns stamped on every frozen baseline row.
+_BASELINE_META = ["model_version", "baseline_frozen_at"]
+
+run_timestamp = datetime.datetime.utcnow().isoformat()
 
 # COMMAND ----------
 current_pdf = spark.table(cfg.inference_features).toPandas()
 
-# Reference snapshot: frozen once at first training run, refreshed
-# deliberately (not automatically) after a validated retrain, so the drift
-# baseline doesn't silently chase the incoming data.
-try:
-    reference_pdf = spark.table(cfg.volume_reference_data).toPandas()
-except Exception:
-    print("No reference snapshot found yet - seeding it from the current batch. "
-          "Drift will only be meaningful from the next run onward.")
-    spark.createDataFrame(current_pdf.astype(str)).write.mode("overwrite").saveAsTable(
-        cfg.volume_reference_data
-    )
-    reference_pdf = current_pdf
+# Latest scored batch + the champion version that produced it. Drift runs right
+# after inference in the same job, so the "served version" is simply the
+# model_version stamped on the newest predictions.
+preds_pdf = spark.table(cfg.inference_predictions).toPandas()
+latest_scored = preds_pdf["scored_at"].max()
+current_preds = preds_pdf[preds_pdf["scored_at"] == latest_scored].copy()
+served_version = (
+    str(current_preds["model_version"].iloc[0])
+    if not current_preds.empty and "model_version" in current_preds.columns
+    else None
+)
+print(f"Served champion version for this batch: {served_version}")
+
+
+def load_versioned_reference(table_name: str, seed_pdf: pd.DataFrame) -> pd.DataFrame:
+    """
+    Read the frozen baseline for the currently-served model version, keeping
+    baseline<->model_version lineage auditable (MRM requirement). Falls back to:
+      1. the most recent baseline version, if the served version has none, then
+      2. lazy-seeding from the current batch (tagged with the served version)
+         if the baseline table doesn't exist yet.
+    Baselines are append-only + versioned - never overwritten - so historical
+    drift runs remain reproducible.
+    """
+    try:
+        ref_full = spark.table(table_name)
+    except Exception:
+        print(f"No baseline in {table_name} yet - lazy-seeding (v{served_version}).")
+        seed = spark.createDataFrame(seed_pdf.astype(str))
+        for c in _BASELINE_META:
+            if c in seed.columns:
+                seed = seed.drop(c)
+        seed = (seed
+                .withColumn("model_version", F.lit(str(served_version)))
+                .withColumn("baseline_frozen_at", F.lit(run_timestamp)))
+        seed.write.mode("append").option("mergeSchema", "true").saveAsTable(table_name)
+        return seed_pdf.copy()
+
+    if "model_version" in ref_full.columns and served_version is not None:
+        ref_v = ref_full.filter(F.col("model_version") == served_version)
+        if ref_v.count() == 0:
+            newest = (ref_full.orderBy(F.col("baseline_frozen_at").desc())
+                      .select("model_version").first())
+            if newest is not None:
+                ref_v = ref_full.filter(F.col("model_version") == newest[0])
+                print(f"No baseline for v{served_version}; using newest v{newest[0]}.")
+        drop_cols = [c for c in _BASELINE_META if c in ref_v.columns]
+        return ref_v.drop(*drop_cols).toPandas() if drop_cols else ref_v.toPandas()
+    # Legacy unversioned baseline (pre-provenance).
+    return ref_full.toPandas()
 
 # COMMAND ----------
+# ── 1. Feature drift (covariate shift) ──────────────────────────────────────
+reference_pdf = load_versioned_reference(cfg.volume_reference_data, current_pdf)
 for col in DRIFT_COLUMNS:
     current_pdf[col] = current_pdf[col].astype(float)
     reference_pdf[col] = reference_pdf[col].astype(float)
 
-drift_report = compute_drift_report(
+feature_drift = compute_drift_report(
     reference_pdf, current_pdf, DRIFT_COLUMNS,
     warn_threshold=cfg.PSI_WARN_THRESHOLD, alert_threshold=cfg.PSI_ALERT_THRESHOLD,
 )
-print(drift_report)
+feature_drift["drift_type"] = "feature"
+print("Feature drift:\n", feature_drift)
 
-drift_report["run_timestamp"] = datetime.datetime.utcnow().isoformat()
+# COMMAND ----------
+# ── 2. Prediction / output drift ────────────────────────────────────────────
+# Compare the latest scored batch's prediction distribution against the frozen
+# prediction reference for the served version (same versioned discipline).
+pred_reference = load_versioned_reference(cfg.prediction_reference_data, current_preds)
+
+for col in PREDICTION_DRIFT_COLUMNS:
+    current_preds[col] = pd.to_numeric(current_preds.get(col), errors="coerce")
+    pred_reference[col] = pd.to_numeric(pred_reference.get(col), errors="coerce")
+
+prediction_drift = compute_drift_report(
+    pred_reference, current_preds, PREDICTION_DRIFT_COLUMNS,
+    warn_threshold=cfg.PSI_WARN_THRESHOLD, alert_threshold=cfg.PSI_ALERT_THRESHOLD,
+)
+prediction_drift["drift_type"] = "prediction"
+print("Prediction drift:\n", prediction_drift)
+
+# COMMAND ----------
+# ── 3. GLM extrapolation guard on delta_to_best_buy ─────────────────────────
+# GLMs extrapolate linearly: predictions where delta_to_best_buy sits outside
+# the training [min, max] support are unreliable. Flag when too much of the
+# batch is out-of-range - the single most GLM-specific risk for this model.
+extrap = extrapolation_report(
+    reference_pdf[EXTRAPOLATION_FEATURE],
+    current_pdf[EXTRAPOLATION_FEATURE],
+    feature=EXTRAPOLATION_FEATURE,
+    alert_rate=cfg.EXTRAPOLATION_ALERT_RATE,
+)
+extrap_report = pd.DataFrame([{
+    "feature": extrap["feature"],
+    "psi": extrap["out_of_range_rate"],   # store OOR rate in the psi column for a uniform schema
+    "status": extrap["status"],
+    "drift_type": "extrapolation",
+}])
+print(f"Extrapolation guard ({EXTRAPOLATION_FEATURE}): "
+      f"{extrap['out_of_range_rate']:.2%} outside training range "
+      f"[{extrap['ref_min']:.4f}, {extrap['ref_max']:.4f}] -> {extrap['status']}")
+
+# COMMAND ----------
+# ── Persist all three reports to a single drift_results table ────────────────
+drift_report = pd.concat(
+    [feature_drift, prediction_drift, extrap_report], ignore_index=True
+)
+drift_report["run_timestamp"] = run_timestamp
 spark.createDataFrame(drift_report.astype(str)).write.mode("append").option(
     "mergeSchema", "true"
 ).saveAsTable(cfg.drift_results)
@@ -65,25 +163,31 @@ dbutils.jobs.taskValues.set(key="drift_detected", value=bool(drift_detected))
 
 if drift_detected and notification_email:
     run_url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
-    alerted_features = drift_report[drift_report["status"] == "ALERT"]
+    alerted = drift_report[drift_report["status"] == "ALERT"]
+    # Label each alerted item with its drift type so the email is self-explanatory.
+    drift_summary = {
+        f"{r['drift_type']}::{r['feature']}": round(float(r["psi"]), 3)
+        for _, r in alerted.iterrows()
+    }
     send_drift_alert(
         to_addresses=[notification_email],
         environment=dbutils.widgets.get("catalog"),
-        drift_summary=dict(zip(alerted_features["feature"], alerted_features["psi"].round(3))),
+        drift_summary=drift_summary,
         run_url=run_url,
     )
     if notification_webhook_url:
         send_webhook_notification(
             webhook_url=notification_webhook_url,
-            title=f"[{catalog}] Data drift detected",
+            title=f"[{catalog}] Drift detected ({', '.join(sorted(alerted['drift_type'].unique()))})",
             facts={
-                "alerted_features": ", ".join(alerted_features["feature"].astype(str).tolist()),
-                "max_psi": str(alerted_features["psi"].max().round(3)),
+                "alerted_items": ", ".join(f"{r['drift_type']}::{r['feature']}"
+                                           for _, r in alerted.iterrows()),
+                "max_psi": str(round(float(alerted["psi"].astype(float).max()), 3)),
             },
             run_url=run_url,
         )
-    print(f"Drift alert email sent for features: {list(alerted_features['feature'])}")
+    print(f"Drift alert email sent for: {list(drift_summary.keys())}")
 elif drift_detected:
     print("Drift detected but no notification_email configured - skipping mail.")
 else:
-    print("No significant drift detected.")
+    print("No significant drift detected (feature, prediction, or extrapolation).")

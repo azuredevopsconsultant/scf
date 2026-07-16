@@ -194,6 +194,42 @@ else:
     print(f"Challenger v{version} rejected — champion unchanged.")
 
 # COMMAND ----------
+# Freeze the drift baseline at training time. When a new model becomes
+# @champion (or on the first-ever registration), snapshot the validated
+# training feature distribution as the drift baseline, so inference drift is
+# measured against the model's actual training data rather than a lazy first
+# inference batch. This is the Databricks "baseline table" discipline:
+#   - baseline only moves on a validated promotion (never silently chases data)
+#   - append-only + tagged with model_version (never overwritten), so past
+#     drift runs remain reproducible and baseline<->model lineage is auditable
+#     for model-risk-management. Inference reads the baseline for the version
+#     it is serving, and lazy-seeds only if none exists yet.
+if decision["promoted"] or str(version) == "1":
+    from pyspark.sql import functions as F
+    import datetime as _dt
+    DRIFT_BASELINE_COLUMNS = ['int_rate', 'best_buy', 'delta_to_best_buy',
+                              'tenure_months', '#accounts']
+    try:
+        baseline_sdf = (
+            spark.table(cfg.silver_agg_cohort)
+            .select(*DRIFT_BASELINE_COLUMNS)
+            .withColumn("model_version", F.lit(str(version)))
+            .withColumn("baseline_frozen_at", F.lit(_dt.datetime.utcnow().isoformat()))
+        )
+        (
+            baseline_sdf.write.mode("append")
+            .option("mergeSchema", "true")
+            .saveAsTable(cfg.volume_reference_data)
+        )
+        print(f"Drift baseline frozen (v{version}) -> "
+              f"{cfg.volume_reference_data} ({baseline_sdf.count()} rows)")
+    except Exception as e:
+        print(f"WARNING: could not freeze drift baseline ({e}). "
+              "Inference will lazy-seed the baseline instead.")
+else:
+    print("Challenger not promoted - drift baseline left unchanged.")
+
+# COMMAND ----------
 dbutils.jobs.taskValues.set(key="registered_version", value=str(version))
 dbutils.jobs.taskValues.set(key="promoted",           value=bool(decision["promoted"]))
 dbutils.jobs.taskValues.set(key="promotion_reason",   value=decision["reason"])

@@ -59,3 +59,33 @@ def compute_drift_report(
 
 def any_alerts(drift_report: pd.DataFrame) -> bool:
     return bool((drift_report["status"] == "ALERT").any())
+
+
+def extrapolation_report(
+    reference: pd.Series,
+    current: pd.Series,
+    feature: str,
+    alert_rate: float = 0.05,
+) -> dict:
+    """
+    GLM extrapolation guard. A GLM extrapolates linearly, so predictions made
+    where a feature falls outside its training support are unreliable. Reports
+    the fraction of the current batch outside the reference [min, max] range
+    and flags ALERT when it exceeds ``alert_rate``.
+    """
+    reference = pd.to_numeric(reference, errors="coerce").dropna()
+    current = pd.to_numeric(current, errors="coerce").dropna()
+    if reference.empty or current.empty:
+        return {"feature": feature, "ref_min": np.nan, "ref_max": np.nan,
+                "out_of_range_rate": np.nan, "status": "OK"}
+
+    ref_min, ref_max = float(reference.min()), float(reference.max())
+    out_of_range = ((current < ref_min) | (current > ref_max)).mean()
+    status = "ALERT" if out_of_range > alert_rate else "OK"
+    return {
+        "feature": feature,
+        "ref_min": ref_min,
+        "ref_max": ref_max,
+        "out_of_range_rate": float(out_of_range),
+        "status": status,
+    }
