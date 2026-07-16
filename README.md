@@ -1,13 +1,20 @@
-# SCF Cohort Matrix — Databricks Asset Bundle
+# SCF Cohort Matrix — Databricks MLOps Pipeline
 
-Two Databricks Jobs (multi-task workflows) generated from the original
-`scf_cohort_matrix.ipynb` GLM cohort-modelling notebook.
+Production-grade MLOps platform for the SCF savings cashflow GLM model, built as a
+Databricks Asset Bundle (DAB). Forecasts savings account balances up to 60 months
+forward per cohort × product, achieving **2.28% Mean APE** on a £9–11bn portfolio.
+
+**Model:** 30 GLMs (10 products × 3 GLMs) packaged as one MLflow pyfunc.
 
 ```
 scf-cohort-dab/
-├── databricks.yml                 # bundle root: targets (dev/prod), variables
+├── databricks.yml                 # bundle root: dev/preprod/prod targets, service principals
+├── .github/workflows/deploy.yml   # CI/CD: OIDC, unit tests → validate → deploy
 ├── resources/
-│   ├── training_job.yml           # Job 1: training pipeline
+│   ├── training_job.yml           # Training pipeline (quarterly, 14 tasks)
+│   ├── inference_job.yml          # Inference pipeline (daily, 8 tasks + auto-retrain)
+│   ├── maintenance_job.yml        # Delta OPTIMIZE (weekly)
+│   └── integration_test_job.yml   # Integration tests (preprod)
 │   └── inference_job.yml          # Job 2: inference pipeline
 ├── src/
 │   ├── common/                    # shared, imported by both pipelines
@@ -38,22 +45,35 @@ scf-cohort-dab/
 └── requirements-dev.txt
 ```
 
-## Pipeline 1 — Training
+## Pipeline 1 — Training (Quarterly)
 
-`Data Ingestion → Data Preprocessing → Model Training → Model Evaluation → Model Registration (Champion/Challenger) → Confirmation Mail`
+`feature_engineering → data_ingestion → data_preprocessing → data_validation → model_training (HPO+CV) → model_evaluation → model_validation → FMC gate → model_registration → deploy → smoke_test → auto_rollback → confirmation_mail`
 
-- Runs weekly (Mon 03:00 UTC) — adjust `resources/training_job.yml` schedule to your data refresh cadence.
-- Job-level `email_notifications` fire on **on_success** and **on_failure**, plus a duration-warning alert.
-- Every successful run registers a new Unity Catalog model version aliased `challenger`. It's only promoted to `champion` if it beats the current champion's portfolio MAPE by `MAPE_PROMOTION_THRESHOLD` (default 15%, see `src/common/config.py`).
+- Runs quarterly (1st Jan/Apr/Jul/Oct 03:00 UTC).
+- Hyperparameter grid (5 configs × 10 products) with 3-fold rolling-origin CV; each trial a nested MLflow child run.
+- FMC second-line validation gate — human APPROVED/REJECTED via `fmc_approve.py` (24h polling).
+- Every run registers `@challenger`; promoted to `@champion` only if MAPE improves >15%.
 
 ## Pipeline 2 — Inference
-
-`Data Ingestion → Data Preprocessing → Inferencing → Model Monitoring → Data Drift (alert+mail) → Data Quality → Confirmation Mail`
+`data_ingestion → data_preprocessing → inferencing (applyInPandas) → model_monitoring → data_drift (PSI) → data_quality → retraining_trigger → auto_retrain → confirmation_mail`
 
 - Runs daily (06:00 UTC).
-- Always scores using the `champion` alias — never `challenger` — so production traffic is isolated from unpromoted candidates.
-- Data-drift task sends an email **only when PSI crosses the alert threshold** (0.25 by default), separate from the always-on confirmation mail.
-- Confirmation mail uses `run_if: ALL_DONE` so it fires and reports pass/fail per stage even if an upstream task failed.
+- Always scores using the `@champion` alias — never `@challenger`.
+- Distributed inference via Spark `applyInPandas` grouped by product (10 parallel executors).
+- Output includes APE columns (`ape_balance`, `ape_receipts`, ...) and GLM ratio columns.
+- 3-signal auto-retrain: PSI ≥ 0.25 OR null rate >10% OR MAPE >20% → fires training pipeline.
+
+## CI/CD — GitHub Actions (OIDC, no PAT)
+
+```
+feature/* → PR      → unit-tests → validate → plan
+develop   → push    → unit-tests → validate → deploy-dev
+release/* → push    → deploy-preprod → integration-tests (5 stages)
+main      → push    → deploy-prod (FMC sign-off gate)
+```
+
+GitHub authenticates to Databricks via OIDC token exchange — no PAT or secret in the repo.
+Configure GitHub Environment variables `DATABRICKS_HOST` + `DATABRICKS_CLIENT_ID` per environment.
 
 ## Deploying
 
