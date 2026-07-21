@@ -15,6 +15,21 @@
 # MAGIC 5. Monitoring tests        — monitoring_metrics + drift_results populated
 
 # COMMAND ----------
+# This is a Databricks *notebook*, not a local pytest module. It depends on the
+# Databricks runtime globals (`dbutils`, `spark`), which don't exist when pytest
+# imports this file locally / in CI. Skip collection cleanly in that case.
+try:
+    dbutils  # noqa: F821  (injected by the Databricks runtime)
+except NameError:
+    import pytest
+
+    pytest.skip(
+        "Databricks-only integration notebook: requires dbutils/spark runtime "
+        "(runs as a Databricks job in the staging workspace, not under local pytest)",
+        allow_module_level=True,
+    )
+
+# COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds_pp")
 dbutils.widgets.text("schema",  "savings_cashflow")
 dbutils.widgets.text("model_name", "")

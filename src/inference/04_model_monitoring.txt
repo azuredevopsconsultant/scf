@@ -106,7 +106,7 @@ assert max_null_rate < 0.5, (
 
 print(f"Model monitoring complete: {len(monitoring_df)} products logged.")
 
- COMMAND ----------
+# COMMAND ----------
 # MAGIC %md
 # MAGIC ## Actual vs Predicted Charts
 # MAGIC One chart panel per product — Balance, Receipts, Withdrawals, Transfers.
