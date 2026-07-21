@@ -18,7 +18,7 @@ sys.path.append("../..")
 from src.common.config import get_config
 from src.common.quality_checks import (
     check_row_count, check_null_rates, check_schema_columns,
-    check_value_range, all_checks_passed,
+    check_value_range,
 )
 import pandas as pd
 

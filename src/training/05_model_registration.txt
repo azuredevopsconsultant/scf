@@ -240,6 +240,7 @@ dbutils.jobs.taskValues.set(key="model_name",         value=model_name)
 # Provides a human-readable record: model name, version, run ID, feature list,
 # target labels, portfolio MAPE. Visible in Unity Catalog governance layer.
 import datetime as dt
+import pandas as pd
 
 feature_list = [
     "product", "cohort", "reporting_period", "months_since_start",
@@ -272,9 +273,9 @@ spark.createDataFrame(card_row).write.mode("append").option(
 ).saveAsTable(cfg.model_cards)
 print(f"model_cards written for version {version}")
 
-print(f"\nModel lifecycle summary:")
+print("\nModel lifecycle summary:")
 print(f"  Registered version : {version}")
-print(f"  Alias assigned     : @challenger")
+print("  Alias assigned     : @challenger")
 print(f"  Promoted to @champion: {decision['promoted']}")
 print(f"  Reason             : {decision['reason']}")
 print(f"  UC path            : {model_name}")

@@ -187,7 +187,6 @@ print(f"Total features: {len(enriched_sdf.columns) - 1}")  # -1 for key
 
 # COMMAND ----------
 # Feature summary for MLflow logging
-from pyspark.sql.functions import count, col
 summary = features_sdf.agg(
     F.sum("sum_of_sales").alias("total_portfolio_sales"),
     F.avg("avg_sale_amount").alias("portfolio_avg_transaction"),
@@ -195,7 +194,7 @@ summary = features_sdf.agg(
     F.avg("days_since_last_sale").alias("avg_recency_days"),
 ).collect()[0]
 
-print(f"\nPortfolio summary:")
+print("\nPortfolio summary:")
 print(f"  Total sales      : £{summary['total_portfolio_sales']:,.0f}")
 print(f"  Avg transaction  : £{summary['portfolio_avg_transaction']:.2f}")
 print(f"  Total tx count   : {summary['total_transactions']:,}")

@@ -29,7 +29,6 @@ model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohor
 import sys, pickle, datetime
 sys.path.append("../..")
 from src.common.config import get_config
-from src.common import mlflow_utils
 import mlflow
 from mlflow import MlflowClient
 import pandas as pd
@@ -78,7 +77,7 @@ has_description = (
     and artifact.get("trained_at") is not None
 )
 
-print(f"Description check:")
+print("Description check:")
 print(f"  cutoff_period present : {artifact.get('cutoff_period') is not None}")
 print(f"  trained_at present    : {artifact.get('trained_at') is not None}")
 print(f"  n_products > 0        : {len(all_results) > 0}")

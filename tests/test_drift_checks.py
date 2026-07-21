@@ -7,7 +7,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from src.common.drift_checks import _psi_for_series, compute_drift_report, any_alerts
 

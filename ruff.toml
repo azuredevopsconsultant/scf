@@ -1,0 +1,28 @@
+# Ruff config tuned for Databricks notebooks.
+#
+# These source files are Databricks notebooks (.py with "# COMMAND ----------"
+# cell markers), not plain modules. On a Databricks cluster the runtime injects
+# `spark`, `dbutils`, `display`, etc. as globals, and the notebook pattern reads
+# job widgets (dbutils.widgets.get) BEFORE importing modules. So ruff's default
+# F821 (undefined-name) and E402 (import-not-at-top) rules fire ~450 false
+# positives that do not apply at runtime. This config makes ruff notebook-aware.
+
+target-version = "py310"
+
+# Databricks runtime globals - stops F821 "undefined name" false positives.
+builtins = [
+    "spark",
+    "dbutils",
+    "display",
+    "displayHTML",
+    "sc",
+    "sqlContext",
+    "getArgument",
+    "spark_partition_id",
+]
+
+[lint]
+ignore = [
+    "E402", # module import not at top: notebooks read dbutils widgets first
+    "E401", # multiple imports on one line: deliberate compact notebook style
+]

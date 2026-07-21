@@ -394,10 +394,10 @@ print(f"\n{'='*60}")
 print(f"Unity Catalog initialisation complete: {catalog}.{schema}")
 print(f"  Created : {len(created)}")
 print(f"  Skipped : {len(skipped)}")
-print(f"\nTables created:")
+print("\nTables created:")
 for t in created:
     print(f"  {catalog}.{schema}.{t}")
 if skipped:
-    print(f"\nSkipped (already exist):")
+    print("\nSkipped (already exist):")
     for s in skipped:
         print(f"  {s}")

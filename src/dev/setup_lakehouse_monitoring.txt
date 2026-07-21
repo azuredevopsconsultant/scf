@@ -26,7 +26,6 @@ from src.common.config import get_config
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.catalog import (
     MonitorTimeSeries, MonitorSnapshot,
-    MonitorInferenceLog, MonitorInferenceLogProblemType,
 )
 
 cfg = get_config(catalog, schema)

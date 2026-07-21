@@ -87,7 +87,6 @@ agg_df['balance_lag_1'] = agg_df.groupby(['cohort', 'product'])['balance'].shift
 # predicted balance each step). We pull the last known balance from
 # silver_agg_cohort (the training Silver table) to fill those gaps.
 try:
-    import numpy as np
     train_silver = spark.table(cfg.silver_agg_cohort).toPandas()
     train_silver['reporting_period'] = train_silver['reporting_period'].astype(str)
     train_silver['cohort'] = train_silver['cohort'].astype(str)

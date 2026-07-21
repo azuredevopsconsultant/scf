@@ -22,7 +22,6 @@ sys.path.append("../..")
 from src.common.config import get_config
 from src.common.dataset_versioning import record_dataset_version
 import pandas as pd
-import numpy as np
 
 cfg = get_config(catalog, schema)
 

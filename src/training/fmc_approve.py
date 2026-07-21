@@ -73,6 +73,6 @@ spark.createDataFrame(decision_row).write.mode("append").option(
 
 icon = "✅" if decision == "APPROVED" else "❌"
 print(f"{icon} {decision} recorded for request {request_id} by {approver_name}")
-print(f"The training pipeline will detect this decision within 5 minutes.")
+print("The training pipeline will detect this decision within 5 minutes.")
 if comments:
     print(f"Comments: {comments}")

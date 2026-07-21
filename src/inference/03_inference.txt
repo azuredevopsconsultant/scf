@@ -226,7 +226,7 @@ display(
     .orderBy("product", "cohort", "reporting_period")
     .limit(100)
 )
-print(f"\nBatch inference complete.")
+print("\nBatch inference complete.")
 print(f"  Champion model : {model_name} v{model_version} (@{model_alias})")
 print(f"  Rows scored    : {n_predictions}")
 print(f"  Products       : {n_products}")

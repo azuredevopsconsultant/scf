@@ -24,15 +24,10 @@ class Config:
         """Existing 3 cohort features (int_rate, best_buy, delta_to_best_buy etc.)"""
         return f"{self.catalog}.{self.feature_schema}.feature_store_cohort"
 
-    @property
-    def sales_features(self) -> str:
-        """Redshift sales aggregates: sum_of_sales, avg_sale_amount, sale_count etc."""
-        return f"{self.catalog}.{self.feature_schema}.sales_features"
-
-    @property
-    def feature_store_enriched(self) -> str:
-        """Enriched: existing 3 features + Redshift sales aggregates joined."""
-        return f"{self.catalog}.{self.feature_schema}.feature_store_enriched"
+    # NOTE: sales_features and feature_store_enriched are defined further down
+    # against the main {schema} (not {feature_schema}). Those definitions win at
+    # runtime, so the effective location for both is the main schema - kept
+    # there to match the tables already created by the pipeline.
 
     # ---- Bronze / source tables (replace the original s3:// parquet reads) --
     @property

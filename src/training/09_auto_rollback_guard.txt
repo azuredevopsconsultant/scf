@@ -25,7 +25,6 @@ serving_endpoint_name = dbutils.widgets.get("serving_endpoint_name")
 import sys, datetime
 sys.path.append("../..")
 from src.common.config import get_config
-from src.common import mlflow_utils
 import mlflow
 from mlflow import MlflowClient
 from databricks.sdk import WorkspaceClient
