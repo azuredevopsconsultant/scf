@@ -1,0 +1,41 @@
+[project]
+name = "scf-cohort-dab"
+version = "0.1.0"
+description = "SCF Cohort GLM savings cashflow model - Databricks Asset Bundle MLOps pipeline"
+requires-python = ">=3.10"
+
+# Runtime dependencies (were requirements.txt). Identical across dev/preprod/prod
+# for reproducibility. Installed on the serverless job compute.
+dependencies = [
+    "mlflow>=2.14.0",
+    "statsmodels>=0.14.0",
+    "patsy>=0.5.6",
+    "pandas>=2.0.0",
+    "numpy>=1.26.0",
+    "databricks-feature-engineering>=0.6.0",
+]
+
+[project.optional-dependencies]
+# Local development / CI-only tooling (was requirements-dev.txt). These must
+# NEVER land on serverless job compute:
+#   - databricks-connect : local Spark session against a remote cluster only
+#   - databricks-sdk     : ops scripts + CI, pre-installed on job runtime
+#   - pytest             : unit / integration test runner
+# Install locally / in CI with:  pip install -e ".[dev]"   (or  pip install ".[dev]")
+dev = [
+    "databricks-connect>=15.4,<15.5",
+    "databricks-sdk>=0.20.0",
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+# Only the pure-Python unit tests run off-cluster (local dev + CI runners).
+testpaths = ["tests"]
+# integration_test.py is an on-cluster Databricks notebook (executed via
+# resources/integration_test_job.yml against a real workspace). It asserts
+# against live UC tables + the MLflow registry, so it MUST NOT be collected by
+# the off-cluster unit runner - there it only fails on mocked spark/dbutils.
+# test_quality_checks.py needs a real pyspark session and skips itself via
+# pytest.importorskip when pyspark is absent.
+addopts = "--ignore=tests/integration_test.py"
+

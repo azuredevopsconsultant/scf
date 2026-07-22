@@ -6,6 +6,12 @@ import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
+
+# quality_checks operates on Spark DataFrames, so this suite needs a real
+# pyspark session. Skip the whole module cleanly (rather than hard-erroring at
+# collection) when pyspark isn't installed - e.g. the lightweight off-cluster
+# CI runner. It still runs locally (with pyspark) and on a Databricks cluster.
+pytest.importorskip("pyspark")
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType
 

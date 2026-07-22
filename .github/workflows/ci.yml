@@ -23,7 +23,18 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run unit tests
-        run: pytest -q
+        # Off-cluster unit tests only. The two Databricks/Spark-dependent
+        # modules are excluded from CI and run elsewhere:
+        #   - integration_test.py    -> on a real cluster, post-deploy, via the
+        #                               integration_test_job (needs dbutils/spark)
+        #   - test_quality_checks.py -> locally / on-cluster with a real Spark
+        #                               session (needs pyspark)
+        # Both already self-skip, but we exclude them explicitly so a transitive
+        # pyspark (pulled in by databricks-connect) can't try to start or connect
+        # a Spark session on the CI runner. Do NOT generate a conftest.py that
+        # mocks dbutils/spark/pyspark - that defeats the skip guards and forces
+        # the integration notebook to run against MagicMocks.
+        run: pytest tests/ -q -ra --ignore=tests/integration_test.py --ignore=tests/test_quality_checks.py
 
       - name: Install Databricks CLI
         uses: databricks/setup-cli@main
