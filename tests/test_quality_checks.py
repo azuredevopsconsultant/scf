@@ -16,7 +16,14 @@ from src.common.quality_checks import (
 
 @pytest.fixture(scope="module")
 def spark():
-    return SparkSession.builder.master("local[1]").appName("test_quality").getOrCreate()
+    try:
+        spark_session = SparkSession.builder.master("local[1]").appName("test_quality").getOrCreate()
+    except RuntimeError as exc:
+        if "Only remote Spark sessions using Databricks Connect are supported" in str(exc):
+            pytest.skip("Local SparkSession is unavailable when databricks-connect is installed.")
+        raise
+    yield spark_session
+    spark_session.stop()
 
 @pytest.fixture
 def good_df(spark):
