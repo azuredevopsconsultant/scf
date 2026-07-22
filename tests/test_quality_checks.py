@@ -5,13 +5,28 @@ Tests for src/common/quality_checks.py — run with: pytest tests/ (no cluster n
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
+import importlib.util
+
 import pytest
 
-# quality_checks operates on Spark DataFrames, so this suite needs a real
+# quality_checks operates on Spark DataFrames, so this suite needs a real, local
 # pyspark session. Skip the whole module cleanly (rather than hard-erroring at
-# collection) when pyspark isn't installed - e.g. the lightweight off-cluster
-# CI runner. It still runs locally (with pyspark) and on a Databricks cluster.
+# collection) when that isn't available:
+#   1. pyspark not installed at all - e.g. a lightweight off-cluster runner.
+#   2. databricks-connect is installed - it shadows pyspark with a client that
+#      rejects local SparkSession.getOrCreate() ("Only remote Spark sessions
+#      using Databricks Connect are supported"), so importorskip("pyspark")
+#      alone isn't enough. This is the case on the CI runner.
+# It still runs locally (with a real local pyspark) and on a Databricks cluster.
 pytest.importorskip("pyspark")
+if importlib.util.find_spec("databricks.connect") is not None:
+    pytest.skip(
+        "databricks-connect is installed: a local pyspark SparkSession cannot be "
+        "created here (needs a real cluster). Run this suite locally with plain "
+        "pyspark or on a Databricks cluster.",
+        allow_module_level=True,
+    )
+
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType
 
@@ -22,7 +37,12 @@ from src.common.quality_checks import (
 
 @pytest.fixture(scope="module")
 def spark():
-    return SparkSession.builder.master("local[1]").appName("test_quality").getOrCreate()
+    try:
+        return (
+            SparkSession.builder.master("local[1]").appName("test_quality").getOrCreate()
+        )
+    except RuntimeError as exc:
+        pytest.skip(f"Local Spark session unavailable in this environment: {exc}")
 
 @pytest.fixture
 def good_df(spark):
