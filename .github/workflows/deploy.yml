@@ -40,7 +40,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: pytest tests/
-        run: python -m pytest tests/ -v --tb=short --junitxml=test-results.xml
+        # Exclude Spark/Databricks-runtime-dependent suites; both self-skip, but
+        # we exclude them explicitly so databricks-connect (installed via
+        # requirements-dev.txt) cannot attempt to start a local Spark session.
+        run: python -m pytest tests/ -v --tb=short --junitxml=test-results.xml --ignore=tests/integration_test.py --ignore=tests/test_quality_checks.py
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
