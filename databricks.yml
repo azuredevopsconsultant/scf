@@ -34,7 +34,6 @@ targets:
     default: true
     workspace:
       host: https://dbc-a2b9471c-0cac.cloud.databricks.com
-      profile: dbc-a2b9471c-0cac
     variables:
       environment: dev
       catalog: pd_dtl_ds_dev
