@@ -1,4 +1,4 @@
-﻿fixtures\generate_fixtures.py
+fixtures\generate_fixtures.py
 src\__init__.py
 src\common\config.py
 src\common\dataset_versioning.py
