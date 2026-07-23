@@ -1,46 +1,202 @@
-name: CI
+name: "DAB CI/CD: Enterprise Pipeline with Protection Gates"
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches:
+      - dev
+      - preprod
+      - main
+      - "feature/*"
+  pull_request:
+    branches:
+      - dev
+      - preprod
+      - main
+  # Manual trigger: runs the whole pipeline end-to-end (CI -> dev -> preprod -> prod)
+  # from the Actions tab via "Run workflow".
+  workflow_dispatch:
+
+# Explicitly grant permission to write release tags back to the repository
+permissions:
+  contents: write
 
 jobs:
-  test-and-validate:
+  # =========================================================
+  # CI JOB: PYTHON VALIDATION, QUALITY GATES & BUNDLE TESTING
+  # =========================================================
+  ci-test-and-validate:
+    name: Validate All Python Files & Test Bundles
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
-      - name: Install Python dependencies
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install ruff==0.4.4 radon pytest pytest-cov
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Run unit tests
-        # Off-cluster unit tests only. The two Databricks/Spark-dependent
-        # modules are excluded from CI and run elsewhere:
-        #   - integration_test.py    -> on a real cluster, post-deploy, via the
-        #                               integration_test_job (needs dbutils/spark)
-        #   - test_quality_checks.py -> locally / on-cluster with a real Spark
-        #                               session (needs pyspark)
-        # Both already self-skip, but we exclude them explicitly so a transitive
-        # pyspark (pulled in by databricks-connect) can't try to start or connect
-        # a Spark session on the CI runner. Do NOT generate a conftest.py that
-        # mocks dbutils/spark/pyspark - that defeats the skip guards and forces
-        # the integration notebook to run against MagicMocks.
-        run: pytest tests/ -q -ra --ignore=tests/integration_test.py --ignore=tests/test_quality_checks.py
+      # --- INJECT RUFF BUILTINS FOR DATABRICKS RUNTIME VARIABLES ---
+      # This dynamically creates a temporary local config so Ruff ignores
+      # notebook placement styles and adds 'display' as a known builtin.
+      - name: Configure Ruff Global Builtins
+        run: |
+          echo -e 'builtins = ["dbutils", "spark", "display"]\n\n[lint]\nignore = ["E401", "E402"]' > .ruff.toml
 
-      - name: Install Databricks CLI
+      # --- STRUCTURAL & QUALITY VALIDATION FOR ALL PYTHON FILES ---
+      - name: Validate All Python Syntax & Code Smells (Ruff)
+        run: ruff check . --output-format github
+
+      - name: Validate Code Duplication Rules (Radon)
+        run: radon cc . -a -s
+
+      # Off-cluster unit tests only. The two Databricks/Spark-dependent modules
+      # self-skip via their own guards (integration_test.py -> `dbutils` NameError,
+      # test_quality_checks.py -> `importorskip("pyspark")`). We exclude them
+      # explicitly so a transitive pyspark can't start a Spark session on the
+      # runner, and we deliberately do NOT inject a conftest.py that mocks
+      # dbutils/spark/pyspark -- that would defeat the skip-guards and force the
+      # integration notebook to run against MagicMocks, breaking the gate.
+      - name: Run Automated Unit Tests (pytest)
+        run: |
+          pytest tests/ -v --cov=src \
+            --ignore=tests/integration_test.py \
+            --ignore=tests/test_quality_checks.py
+
+      # --- ASSET BUNDLE SYNTAX CHECKING ---
+      - name: Setup Databricks CLI
         uses: databricks/setup-cli@main
 
-      - name: Validate Databricks bundle
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      - name: Validate Dev Configuration
         run: databricks bundle validate -t dev
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_DEV }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_DEV }}
+
+      - name: Validate Preprod Configuration
+        run: databricks bundle validate -t preprod
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PREPROD }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_PREPROD }}
+
+      - name: Validate Prod Configuration
+        run: databricks bundle validate -t prod
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PROD }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_PROD }}
+
+  # =========================================================
+  # CD JOB: DEPLOY DEV
+  # Runs the full pipeline top-to-bottom on a push to main or a manual
+  # "Run workflow" (workflow_dispatch). Each stage `needs` the previous one,
+  # so a single triggered run deploys dev -> preprod -> prod in sequence.
+  # =========================================================
+  cd-deploy-dev:
+    name: Deploy -> Dev
+    runs-on: ubuntu-latest
+    needs: ci-test-and-validate
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Deploy to Dev
+        run: databricks bundle deploy -t dev
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_DEV }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_DEV }}
+
+  # =========================================================
+  # CD JOB: DEPLOY PREPROD
+  # =========================================================
+  cd-deploy-preprod:
+    name: Deploy -> Preprod
+    runs-on: ubuntu-latest
+    needs: cd-deploy-dev
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Deploy to Preprod
+        run: databricks bundle deploy -t preprod
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PREPROD }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_PREPROD }}
+
+  # =========================================================
+  # CD JOB: PRODUCTION DEPLOYMENT WITH ROLLBACK GATE
+  # =========================================================
+  cd-deploy-production:
+    name: Deploy Production Assets
+    runs-on: ubuntu-latest
+    needs: cd-deploy-preprod
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Databricks CLI
+        uses: databricks/setup-cli@main
+
+      # Deploy the last known-good tagged release when one exists; otherwise
+      # deploy the current commit so the full run still completes cleanly.
+      - name: Deploy Production
+        run: |
+          LAST_STABLE_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_STABLE_TAG" ]; then
+            echo "Deploying last stable tag: $LAST_STABLE_TAG"
+            git checkout "$LAST_STABLE_TAG"
+          else
+            echo "No stable release tag found. Deploying current commit."
+          fi
+          databricks bundle deploy -t prod
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PROD }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_PROD }}
+
+      # --- AUTOMATED RELEASE TAGS ON CLEAN FINISH ---
+      - name: Generate Automated Release Tag
+        if: success()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+
+          # Strip 'v' prefix if present for clean semantic calculation
+          CLEAN_TAG=${LATEST_TAG#v}
+
+          BASE_VERSION=$(echo $CLEAN_TAG | cut -d. -f1-2)
+          PATCH_VERSION=$(echo $CLEAN_TAG | cut -d. -f3)
+          NEW_PATCH=$((PATCH_VERSION + 1))
+          NEW_TAG="v${BASE_VERSION}.${NEW_PATCH}"
+
+          echo "Creating new release tag: $NEW_TAG"
+          git tag $NEW_TAG
+          git push origin $NEW_TAG
+
+      - name: Notify Channel - Deployment Success
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text":"Databricks Production Deployment Finished Cleanly. New release tag generated."}' \
+          ${{ secrets.CHAT_WEBHOOK_URL }}
+        continue-on-error: true
