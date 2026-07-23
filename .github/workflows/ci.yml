@@ -43,4 +43,9 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-        run: databricks bundle validate -t dev
+        run: |
+          if [ -z "$DATABRICKS_TOKEN" ] || [ -z "$DATABRICKS_HOST" ]; then
+            echo "⚠️  DATABRICKS_TOKEN or DATABRICKS_HOST is not set — skipping bundle validate."
+            exit 0
+          fi
+          databricks bundle validate -t dev
