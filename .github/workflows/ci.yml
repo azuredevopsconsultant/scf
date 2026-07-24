@@ -76,19 +76,34 @@ jobs:
         uses: databricks/setup-cli@main
 
       - name: Validate Dev Configuration
-        run: databricks bundle validate -t dev
+        run: |
+          if [ -n "$DATABRICKS_HOST" ] && [ -n "$DATABRICKS_TOKEN" ]; then
+            databricks bundle validate -t dev
+          else
+            echo "⚠️  Skipping bundle validate (dev): secrets DATABRICKS_HOST_DEV / DATABRICKS_TOKEN_DEV are not configured (env vars DATABRICKS_HOST / DATABRICKS_TOKEN are empty)."
+          fi
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_DEV }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_DEV }}
 
       - name: Validate Preprod Configuration
-        run: databricks bundle validate -t preprod
+        run: |
+          if [ -n "$DATABRICKS_HOST" ] && [ -n "$DATABRICKS_TOKEN" ]; then
+            databricks bundle validate -t preprod
+          else
+            echo "⚠️  Skipping bundle validate (preprod): secrets DATABRICKS_HOST_PREPROD / DATABRICKS_TOKEN_PREPROD are not configured (env vars DATABRICKS_HOST / DATABRICKS_TOKEN are empty)."
+          fi
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PREPROD }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_PREPROD }}
 
       - name: Validate Prod Configuration
-        run: databricks bundle validate -t prod
+        run: |
+          if [ -n "$DATABRICKS_HOST" ] && [ -n "$DATABRICKS_TOKEN" ]; then
+            databricks bundle validate -t prod
+          else
+            echo "⚠️  Skipping bundle validate (prod): secrets DATABRICKS_HOST_PROD / DATABRICKS_TOKEN_PROD are not configured (env vars DATABRICKS_HOST / DATABRICKS_TOKEN are empty)."
+          fi
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PROD }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_PROD }}
