@@ -1,4 +1,4 @@
-================================================================================
+﻿================================================================================
 FILE: fixtures\generate_fixtures.py
 ================================================================================
 """
@@ -20,7 +20,7 @@ Produces 4 CSVs under fixtures/savingscashflow/:
 
 Column names intentionally match the original notebook's raw extract:
   'account id', 'product code', 'opening date', 'reporting period',
-  'period balance', '£ withdrawal', '£ receipt', '£ internal transfer',
+  'period balance', 'Â£ withdrawal', 'Â£ receipt', 'Â£ internal transfer',
   'interest rate', 'account tenure (months)'
 
 Re-runnable and deterministic (fixed seed) so CI can regenerate if needed.
@@ -80,7 +80,7 @@ def simulate_product(product_code, qrm_category, base_rate, cohort_months, n_acc
     for cohort_month in cohort_months:
         cohort_period = pd.Period(cohort_month, freq="M")
         n_accounts = int(n_accounts_per_cohort * rng.uniform(0.8, 1.2))
-        opening_balances = rng.lognormal(mean=8.5, sigma=0.6, size=n_accounts)  # ~£3k-£15k typical
+        opening_balances = rng.lognormal(mean=8.5, sigma=0.6, size=n_accounts)  # ~Â£3k-Â£15k typical
 
         for acct_i in range(n_accounts):
             account_seq += 1
@@ -113,9 +113,9 @@ def simulate_product(product_code, qrm_category, base_rate, cohort_months, n_acc
                     "opening date": opening_date,
                     "reporting period": str(reporting_period),
                     "period balance": round(new_balance, 2),
-                    "£ withdrawal": round(withdrawal, 2),
-                    "£ receipt": round(receipt, 2),
-                    "£ internal transfer": round(transfer, 2),
+                    "Â£ withdrawal": round(withdrawal, 2),
+                    "Â£ receipt": round(receipt, 2),
+                    "Â£ internal transfer": round(transfer, 2),
                     "interest rate": round(interest_rate, 5),
                     "account tenure (months)": m,
                 })
@@ -186,11 +186,6 @@ class Config:
         """Existing 3 cohort features (int_rate, best_buy, delta_to_best_buy etc.)"""
         return f"{self.catalog}.{self.feature_schema}.feature_store_cohort"
 
-    # NOTE: sales_features and feature_store_enriched are defined further down
-    # against the main {schema} (not {feature_schema}). Those definitions win at
-    # runtime, so the effective location for both is the main schema - kept
-    # there to match the tables already created by the pipeline.
-
     # ---- Bronze / source tables (replace the original s3:// parquet reads) --
     @property
     def raw_base_data(self) -> str:
@@ -209,19 +204,24 @@ class Config:
     def silver_agg_cohort(self) -> str:
         return f"{self.catalog}.{self.schema}.silver_agg_cohort"
 
+    # ---- GLM flow-ratio lookup tables (built by 00_feature_engineering.py) ---
+    # Receipts & outflows are indexed by cohort age Ã— rate bucket; transfers
+    # only by rate bucket (transfer share depends on delta_to_best_buy alone).
+    @property
+    def receipts_lookup(self) -> str:
+        return f"{self.catalog}.{self.feature_schema}.receipts_ratio_lookup"
+
+    @property
+    def outflows_lookup(self) -> str:
+        return f"{self.catalog}.{self.feature_schema}.outflows_ratio_lookup"
+
+    @property
+    def transfers_lookup(self) -> str:
+        return f"{self.catalog}.{self.feature_schema}.transfers_ratio_lookup"
+
     @property
     def feature_store_table(self) -> str:
-        return f"{self.catalog}.{self.schema}.feature_store_cohort"
-
-    @property
-    def feature_store_enriched(self) -> str:
-        """Feature store enriched with Redshift sales aggregate features."""
-        return f"{self.catalog}.{self.schema}.feature_store_enriched"
-
-    @property
-    def sales_features(self) -> str:
-        """Raw Redshift sales aggregate features before joining to cohort features."""
-        return f"{self.catalog}.{self.schema}.sales_features"
+        return f"{self.catalog}.{self.feature_schema}.feature_store_cohort"
 
     # ---- Training artifacts ---------------------------------------------------
     @property
@@ -259,13 +259,18 @@ class Config:
 
     @property
     def training_feature_snapshots(self) -> str:
-        """Full feature snapshot frozen at training time — survives Delta VACUUM."""
+        """Full feature snapshot frozen at training time â€” survives Delta VACUUM."""
         return f"{self.catalog}.{self.schema}.training_feature_snapshots"
 
     # ---- Inference outputs ------------------------------------------------------
     @property
     def inference_predictions(self) -> str:
         return f"{self.catalog}.{self.schema}.inference_predictions"
+
+    @property
+    def inference_predictions_product_month(self) -> str:
+        """Per-cohort forecasts summed up to product x reporting_period."""
+        return f"{self.catalog}.{self.schema}.inference_predictions_product_month"
 
     @property
     def inference_features(self) -> str:
@@ -822,8 +827,8 @@ Lifecycle aliases used:
   @champion   - currently deployed model serving production inference
 
 Promotion flow:
-  train → @challenger → validate (MAPE check) → @champion  (approved)
-                                               → archived   (rejected)
+  train â†’ @challenger â†’ validate (MAPE check) â†’ @champion  (approved)
+                                               â†’ archived   (rejected)
 """
 import mlflow
 from mlflow import MlflowClient
@@ -936,7 +941,7 @@ def evaluate_promotion(
     }
 
 
-# ── Model lifecycle management ────────────────────────────────────────────────
+# â”€â”€ Model lifecycle management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def set_registered_model_description(model_name: str, description: str) -> None:
     """Set a human-readable description on the registered model (applies to all versions)."""
@@ -985,7 +990,7 @@ def archive_rejected_challenger(model_name: str) -> None:
     """
     If a previous @challenger version was NOT promoted to @champion (rejected),
     tag it as 'archived' and remove the @challenger alias so only the new
-    challenger holds that alias. Mirrors the Rejected → Archived flow in
+    challenger holds that alias. Mirrors the Rejected â†’ Archived flow in
     the Databricks MLOps lifecycle diagram.
     """
     client = MlflowClient()
@@ -1056,12 +1061,12 @@ Custom email helper for CONDITIONAL, content-rich mails (drift alert body,
 confirmation-mail run summary) that native job email_notifications can't
 express, since those only fire on fixed run-state events with a fixed body.
 
-Credentials are pulled from a Databricks secret scope — one scope per
+Credentials are pulled from a Databricks secret scope â€” one scope per
 environment so dev/preprod/prod secrets are fully isolated:
 
-  dev     → scope: scf-cohort-dev
-  preprod → scope: scf-cohort-preprod
-  prod    → scope: scf-cohort-prod
+  dev     â†’ scope: scf-cohort-dev
+  preprod â†’ scope: scf-cohort-preprod
+  prod    â†’ scope: scf-cohort-prod
 
 Create scopes once per workspace (see scripts/setup_secret_scopes.sh):
     databricks secrets create-scope scf-cohort-dev
@@ -1080,7 +1085,7 @@ from email.mime.text import MIMEText
 
 from databricks.sdk.runtime import dbutils
 
-# Default scope — overridden at call sites by passing secret_scope=cfg.secret_scope
+# Default scope â€” overridden at call sites by passing secret_scope=cfg.secret_scope
 _DEFAULT_SCOPE = "scf-cohort-notifications"
 SMTP_HOST = "smtp.office365.com"
 SMTP_PORT = 587
@@ -1117,7 +1122,7 @@ def render_summary_table(rows: dict) -> str:
 
 
 def send_drift_alert(to_addresses: list[str], environment: str, drift_summary: dict, run_url: str):
-    subject = f"[{environment.upper()}] ⚠ Data Drift Detected - SCF Cohort Inference"
+    subject = f"[{environment.upper()}] âš  Data Drift Detected - SCF Cohort Inference"
     body = f"""
     <p>Data drift was detected on the latest SCF Cohort inference run.</p>
     {render_summary_table(drift_summary)}
@@ -1131,7 +1136,7 @@ def send_drift_alert(to_addresses: list[str], environment: str, drift_summary: d
 def send_confirmation_mail(
     to_addresses: list[str], environment: str, pipeline_name: str, summary: dict, run_url: str
 ):
-    subject = f"[{environment.upper()}] ✅ {pipeline_name.title()} Pipeline Run Complete - SCF Cohort"
+    subject = f"[{environment.upper()}] âœ… {pipeline_name.title()} Pipeline Run Complete - SCF Cohort"
     body = f"""
     <p>The SCF Cohort {pipeline_name} pipeline finished.</p>
     {render_summary_table(summary)}
@@ -1320,21 +1325,24 @@ FILE: src\dev\create_all_tables.py
 ================================================================================
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Unity Catalog — Create All Tables
+# MAGIC # Unity Catalog â€” Create All Tables
 # MAGIC
 # MAGIC One-shot initialisation: creates all 16 Delta tables in the correct
 # MAGIC catalog and schema with typed columns, table properties, and comments.
-# MAGIC Safe to re-run — uses `CREATE TABLE IF NOT EXISTS`.
+# MAGIC Safe to re-run â€” uses `CREATE TABLE IF NOT EXISTS`.
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds_dev")
 dbutils.widgets.text("schema",  "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 catalog = dbutils.widgets.get("catalog")
 schema  = dbutils.widgets.get("schema")
+model_schema = dbutils.widgets.get("model_schema")
 
 spark.sql(f"CREATE CATALOG  IF NOT EXISTS {catalog}")
 spark.sql(f"CREATE SCHEMA   IF NOT EXISTS {catalog}.{schema}")
-spark.sql(f"CREATE VOLUME   IF NOT EXISTS {catalog}.{schema}.model_artifacts")
+spark.sql(f"CREATE SCHEMA   IF NOT EXISTS {catalog}.{model_schema}")
+spark.sql(f"CREATE VOLUME   IF NOT EXISTS {catalog}.{model_schema}.model_artifacts")
 
 print(f"Initialising tables in {catalog}.{schema}")
 created, skipped = [], []
@@ -1343,13 +1351,13 @@ def run(sql, name):
     try:
         spark.sql(sql)
         created.append(name)
-        print(f"  ✓ {name}")
+        print(f"  âœ“ {name}")
     except Exception as e:
         skipped.append(f"{name}: {e}")
         print(f"  - {name} (already exists or error: {e})")
 
 # COMMAND ----------
-# MAGIC %md ## BRONZE — Raw source tables
+# MAGIC %md ## BRONZE â€” Raw source tables
 
 # COMMAND ----------
 run(f"""
@@ -1359,9 +1367,9 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.raw_base_data (
   `reporting period`  STRING,
   `product code`      STRING,
   `period balance`    DOUBLE,
-  `£ withdrawal`      DOUBLE,
-  `£ receipt`         DOUBLE,
-  `£ internal transfer` DOUBLE,
+  `Â£ withdrawal`      DOUBLE,
+  `Â£ receipt`         DOUBLE,
+  `Â£ internal transfer` DOUBLE,
   `interest rate`     DOUBLE,
   `account tenure (months)` DOUBLE
 )
@@ -1396,7 +1404,7 @@ COMMENT 'Bronze: QRM product category mapping'
 """, "raw_qrm_products")
 
 # COMMAND ----------
-# MAGIC %md ## SILVER — Engineered features
+# MAGIC %md ## SILVER â€” Engineered features
 
 # COMMAND ----------
 run(f"""
@@ -1452,7 +1460,7 @@ TBLPROPERTIES (
   'delta.autoOptimize.optimizeWrite' = 'true',
   'delta.enableChangeDataFeed'       = 'true'
 )
-COMMENT 'Silver: Databricks Feature Engineering Client table. Primary key: cohort × product × months_since_start'
+COMMENT 'Silver: Databricks Feature Engineering Client table. Primary key: cohort Ã— product Ã— months_since_start'
 """, "feature_store_cohort")
 
 run(f"""
@@ -1477,7 +1485,7 @@ COMMENT 'Silver: inference-ready features for current scoring batch'
 """, "inference_features")
 
 # COMMAND ----------
-# MAGIC %md ## GOLD — Model outputs
+# MAGIC %md ## GOLD â€” Model outputs
 
 # COMMAND ----------
 run(f"""
@@ -1504,8 +1512,35 @@ TBLPROPERTIES (
   'delta.autoOptimize.optimizeWrite' = 'true',
   'delta.autoOptimize.autoCompact'   = 'true'
 )
-COMMENT 'Gold: GLM balance/flow predictions per cohort × product × period (append-only)'
+COMMENT 'Gold: GLM balance/flow predictions per cohort Ã— product Ã— period (append-only)'
 """, "inference_predictions")
+
+run(f"""
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.inference_predictions_product_month (
+  product              STRING,
+  reporting_period     STRING,
+  balance_pred         DOUBLE,
+  receipts_pred        DOUBLE,
+  withdrawals_pred     DOUBLE,
+  transfers_pred       DOUBLE,
+  balance              DOUBLE,
+  receipts             DOUBLE,
+  withdrawals          DOUBLE,
+  transfers            DOUBLE,
+  ape_balance          DOUBLE,
+  n_cohorts            BIGINT,
+  scored_at            STRING,
+  model_name           STRING,
+  model_version        STRING,
+  model_alias          STRING
+)
+USING DELTA
+TBLPROPERTIES (
+  'delta.autoOptimize.optimizeWrite' = 'true',
+  'delta.autoOptimize.autoCompact'   = 'true'
+)
+COMMENT 'Gold: per-cohort forecasts summed up to product Ã— month (append-only)'
+""", "inference_predictions_product_month")
 
 run(f"""
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.model_eval_metrics (
@@ -1555,7 +1590,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.drift_results (
 )
 USING DELTA
 TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
-COMMENT 'Monitoring: PSI drift score per feature per inference run — OK / WARN / ALERT'
+COMMENT 'Monitoring: PSI drift score per feature per inference run â€” OK / WARN / ALERT'
 """, "drift_results")
 
 run(f"""
@@ -1572,7 +1607,7 @@ COMMENT 'Monitoring: data quality check results per pipeline run'
 """, "data_quality_results")
 
 # COMMAND ----------
-# MAGIC %md ## AUDIT — Regulatory tables
+# MAGIC %md ## AUDIT â€” Regulatory tables
 
 # COMMAND ----------
 run(f"""
@@ -1586,7 +1621,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.dataset_versions (
 )
 USING DELTA
 TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
-COMMENT 'Audit: Delta table version + timestamp per ingestion — enables VERSION AS OF exact-rerun'
+COMMENT 'Audit: Delta table version + timestamp per ingestion â€” enables VERSION AS OF exact-rerun'
 """, "dataset_versions")
 
 run(f"""
@@ -1607,7 +1642,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.training_feature_snapshots (
 )
 USING DELTA
 TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
-COMMENT 'Audit: frozen feature snapshot per training run — append-only, survives VACUUM'
+COMMENT 'Audit: frozen feature snapshot per training run â€” append-only, survives VACUUM'
 """, "training_feature_snapshots")
 
 run(f"""
@@ -1628,7 +1663,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.model_approvals (
 )
 USING DELTA
 TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
-COMMENT 'Audit: FMC approval/rejection decision, approver, version, timestamp — required for regulatory audit'
+COMMENT 'Audit: FMC approval/rejection decision, approver, version, timestamp â€” required for regulatory audit'
 """, "model_approvals")
 
 run(f"""
@@ -1652,7 +1687,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.model_cards (
 )
 USING DELTA
 TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
-COMMENT 'Audit: auto-generated model card per registered version — name, version, run_id, features, MAPE'
+COMMENT 'Audit: auto-generated model card per registered version â€” name, version, run_id, features, MAPE'
 """, "model_cards")
 
 run(f"""
@@ -1667,7 +1702,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.deployment_history (
 )
 USING DELTA
 TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
-COMMENT 'Audit: every endpoint create/update — version deployed, traffic split %, timestamp'
+COMMENT 'Audit: every endpoint create/update â€” version deployed, traffic split %, timestamp'
 """, "deployment_history")
 
 run(f"""
@@ -1685,7 +1720,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.rollback_events (
 )
 USING DELTA
 TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
-COMMENT 'Audit: rollback reason, version reverted to, smoke test result — always written'
+COMMENT 'Audit: rollback reason, version reverted to, smoke test result â€” always written'
 """, "rollback_events")
 
 # COMMAND ----------
@@ -1782,14 +1817,14 @@ FILE: src\dev\delta_maintenance.py
 ================================================================================
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Delta Table Maintenance — OPTIMIZE + ZORDER
+# MAGIC # Delta Table Maintenance â€” OPTIMIZE + ZORDER
 # MAGIC
 # MAGIC Runs OPTIMIZE and ZORDER on the high-read tables to keep query
 # MAGIC performance production-grade. Also runs ANALYZE to refresh statistics
 # MAGIC for the Unity Catalog query optimizer.
 # MAGIC
 # MAGIC **Run:** Weekly (scheduled separately, not part of training/inference pipelines).
-# MAGIC **Cost:** Reads and rewrites data files — run during off-peak hours.
+# MAGIC **Cost:** Reads and rewrites data files â€” run during off-peak hours.
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
@@ -1812,7 +1847,7 @@ print(f"Delta maintenance started: {start.isoformat()}")
 
 # COMMAND ----------
 OPTIMIZE_JOBS = [
-    # (table, zorder_cols)  — zorder on the columns most used in WHERE/JOIN
+    # (table, zorder_cols)  â€” zorder on the columns most used in WHERE/JOIN
     (cfg.inference_predictions,       ["product", "scored_at"]),
     (cfg.monitoring_metrics,          ["product", "logged_at"]),
     (cfg.drift_results,               ["feature", "run_timestamp"]),
@@ -1831,7 +1866,7 @@ for table, zcols in OPTIMIZE_JOBS:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Audit tables: OPTIMIZE only (no ZORDER — append-only, infrequent)
+# MAGIC ## Audit tables: OPTIMIZE only (no ZORDER â€” append-only, infrequent)
 
 # COMMAND ----------
 OPTIMIZE_ONLY = [
@@ -1853,7 +1888,7 @@ for table in OPTIMIZE_ONLY:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## ANALYZE TABLE — refresh statistics for UC query optimizer
+# MAGIC ## ANALYZE TABLE â€” refresh statistics for UC query optimizer
 
 # COMMAND ----------
 ANALYZE_TABLES = [
@@ -1881,7 +1916,7 @@ FILE: src\dev\setup_lakehouse_monitoring.py
 # MAGIC # Lakehouse Monitoring Setup
 # MAGIC
 # MAGIC Enables **Databricks Lakehouse Monitoring** on the key SCF Cohort tables.
-# MAGIC Run this notebook once after initial deployment — monitoring profiles
+# MAGIC Run this notebook once after initial deployment â€” monitoring profiles
 # MAGIC persist and auto-update on every table write.
 # MAGIC
 # MAGIC **Tables monitored:**
@@ -1915,7 +1950,7 @@ print(f"Assets directory: {assets_dir}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 1 — inference_predictions (TimeSeries)
+# MAGIC ## 1 â€” inference_predictions (TimeSeries)
 # MAGIC Tracks prediction volume, balance_pred distribution, null rates,
 # MAGIC and model version changes over time. Uses `scored_at` as the timestamp.
 
@@ -1931,11 +1966,11 @@ def create_or_update_monitor(table_name, profile, label):
         print(f"Created monitor: {table_name}")
     except Exception as e:
         if "already exists" in str(e).lower():
-            print(f"Monitor already exists: {table_name} — skipping.")
+            print(f"Monitor already exists: {table_name} â€” skipping.")
         else:
             print(f"WARNING: Could not create monitor for {table_name}: {e}")
 
-# inference_predictions — TimeSeries on scored_at
+# inference_predictions â€” TimeSeries on scored_at
 create_or_update_monitor(
     table_name=cfg.inference_predictions,
     label="inference_predictions",
@@ -1951,7 +1986,7 @@ create_or_update_monitor(
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 2 — monitoring_metrics (TimeSeries)
+# MAGIC ## 2 â€” monitoring_metrics (TimeSeries)
 # MAGIC Tracks live MAPE, RMSE, and null prediction rate per product over time.
 
 # COMMAND ----------
@@ -1970,7 +2005,7 @@ create_or_update_monitor(
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 3 — feature_store_cohort (Snapshot)
+# MAGIC ## 3 â€” feature_store_cohort (Snapshot)
 # MAGIC Monitors feature distributions at each training run.
 # MAGIC Detects schema drift and value range violations across training cycles.
 
@@ -1987,8 +2022,8 @@ create_or_update_monitor(
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 4 — drift_results (TimeSeries)
-# MAGIC Tracks PSI trend per feature over time — rising PSI signals
+# MAGIC ## 4 â€” drift_results (TimeSeries)
+# MAGIC Tracks PSI trend per feature over time â€” rising PSI signals
 # MAGIC gradual distribution shift before it reaches the ALERT threshold.
 
 # COMMAND ----------
@@ -2007,7 +2042,7 @@ create_or_update_monitor(
 
 # COMMAND ----------
 print("\nLakehouse Monitoring setup complete.")
-print(f"View dashboards in Databricks UI: Catalog → {catalog}.{schema} → <table> → Quality tab")
+print(f"View dashboards in Databricks UI: Catalog â†’ {catalog}.{schema} â†’ <table> â†’ Quality tab")
 print(f"Monitor assets stored at: {assets_dir}")
 print("\nTables monitored:")
 for t in [cfg.inference_predictions, cfg.monitoring_metrics,
@@ -2020,7 +2055,7 @@ FILE: src\dev\setup_rbac.py
 ================================================================================
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # RBAC Setup — Unity Catalog Permissions
+# MAGIC # RBAC Setup â€” Unity Catalog Permissions
 # MAGIC
 # MAGIC Run once after bundle deploy to enforce least-privilege access.
 # MAGIC Requires CATALOG owner or metastore admin privileges.
@@ -2038,9 +2073,11 @@ FILE: src\dev\setup_rbac.py
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema",  "savings_cashflow")
 dbutils.widgets.text("model_name", "")
+dbutils.widgets.text("model_schema", "ml_models")
 catalog    = dbutils.widgets.get("catalog")
 schema     = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 full_schema = f"{catalog}.{schema}"
 
 import sys
@@ -2054,12 +2091,12 @@ def run_grant(sql):
         spark.sql(sql)
         print(f"  OK: {sql[:80]}...")
     except Exception as e:
-        errors.append(f"FAILED: {sql[:80]}... → {e}")
+        errors.append(f"FAILED: {sql[:80]}... â†’ {e}")
         print(f"  SKIP (group may not exist yet): {e}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 1 — Catalog and Schema USE grants
+# MAGIC ## 1 â€” Catalog and Schema USE grants
 
 # COMMAND ----------
 print("=== Catalog + Schema ===")
@@ -2069,7 +2106,7 @@ for group in ["ml-engineers", "data-analysts", "data-scientists", "fmc-reviewers
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 2 — Table SELECT grants
+# MAGIC ## 2 â€” Table SELECT grants
 
 # COMMAND ----------
 print("=== Table SELECT ===")
@@ -2097,7 +2134,7 @@ for tbl in fmc_tables:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 3 — Model Registry grants
+# MAGIC ## 3 â€” Model Registry grants
 
 # COMMAND ----------
 print("=== Model Registry ===")
@@ -2108,7 +2145,7 @@ run_grant(f"GRANT SELECT ON REGISTERED MODEL {model_name} TO `data-analysts`")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 4 — Feature Store MODIFY grant (data scientists write features)
+# MAGIC ## 4 â€” Feature Store MODIFY grant (data scientists write features)
 
 # COMMAND ----------
 print("=== Feature Store WRITE ===")
@@ -2188,7 +2225,7 @@ FILE: src\inference\02_data_preprocessing.py
 # MAGIC
 # MAGIC Feature table write uses **Databricks Feature Engineering Client**
 # MAGIC (`fe.write_table(mode="merge")`) so Unity Catalog lineage tracks:
-# MAGIC raw_base_data → inference_features → inference_predictions → model.
+# MAGIC raw_base_data â†’ inference_features â†’ inference_predictions â†’ model.
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
@@ -2247,8 +2284,8 @@ df['cohort_id'] = df['cohort']
 agg_df = (
     df.groupby(['cohort_id', 'QRM Category', 'months_since_start'])
     .agg({
-        'reporting period': 'max', 'period balance': 'sum', '£ withdrawal': 'sum',
-        '£ receipt': 'sum', '£ internal transfer': 'sum', 'interest rate': 'mean',
+        'reporting period': 'max', 'period balance': 'sum', 'Â£ withdrawal': 'sum',
+        'Â£ receipt': 'sum', 'Â£ internal transfer': 'sum', 'interest rate': 'mean',
         'best_buy': 'mean', 'account tenure (months)': 'mean', 'account id': 'nunique',
     })
     .reset_index()
@@ -2262,7 +2299,7 @@ agg_df = agg_df.sort_values(['cohort', 'product', 'months_since_start'])
 
 agg_df['balance_lag_1'] = agg_df.groupby(['cohort', 'product'])['balance'].shift(1)
 
-# Seed balance_lag_1 for the first inference period of each cohort×product.
+# Seed balance_lag_1 for the first inference period of each cohortÃ—product.
 # The inference batch only contains new months, so shift(1) produces NaN for
 # the earliest period in the batch. Without this seed the model chains NaN
 # predictions across every month (it overwrites balance_lag_1 with its own
@@ -2272,7 +2309,7 @@ try:
     train_silver = spark.table(cfg.silver_agg_cohort).toPandas()
     train_silver['reporting_period'] = train_silver['reporting_period'].astype(str)
     train_silver['cohort'] = train_silver['cohort'].astype(str)
-    # Latest training balance per cohort×product = the lag seed for month 1 of inference
+    # Latest training balance per cohortÃ—product = the lag seed for month 1 of inference
     last_train_bal = (
         train_silver.sort_values('reporting_period')
         .groupby(['cohort', 'product'])['balance']
@@ -2322,7 +2359,7 @@ try:
             df=inference_sdf,
             description=(
                 "Inference-ready features for SCF GLM scoring. "
-                "Primary key: cohort × product × months_since_start. "
+                "Primary key: cohort Ã— product Ã— months_since_start. "
                 "Written by inference/02_data_preprocessing.py."
             ),
         )
@@ -2334,7 +2371,7 @@ except ImportError:
     inference_sdf.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(
         cfg.inference_features
     )
-    print(f"Feature Engineering SDK not available — wrote plain Delta: {cfg.inference_features}")
+    print(f"Feature Engineering SDK not available â€” wrote plain Delta: {cfg.inference_features}")
 
 record_dataset_version(
     spark=spark,
@@ -2359,12 +2396,12 @@ FILE: src\inference\03_inference.py
 # MAGIC
 # MAGIC ```
 # MAGIC Feature Tables (UC)
-# MAGIC      │
-# MAGIC      ▼
+# MAGIC      â”‚
+# MAGIC      â–¼
 # MAGIC Champion Model loaded from UC Model Registry
-# MAGIC      │  (applyInPandas per product — Spark-distributed)
-# MAGIC      ▼
-# MAGIC Inference Tables (UC)  ──▶  Analytics / Retention Strategy
+# MAGIC      â”‚  (applyInPandas per product â€” Spark-distributed)
+# MAGIC      â–¼
+# MAGIC Inference Tables (UC)  â”€â”€â–¶  Analytics / Retention Strategy
 # MAGIC ```
 # MAGIC
 # MAGIC Key design decisions:
@@ -2379,10 +2416,12 @@ FILE: src\inference\03_inference.py
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_name", "")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("model_alias", "champion")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 model_alias = dbutils.widgets.get("model_alias") or "champion"
 
 import sys, datetime
@@ -2429,31 +2468,31 @@ print(f"Inference features: {n_feature_rows} rows  |  {n_products} products")
 # COMMAND ----------
 # Define output schema for applyInPandas.
 # Matches the Excel GLM_Testing_Results output exactly:
-#   balance_pred, receipts_pred, withdrawals_pred, transfers_pred  ← GLM predictions
-#   balance, receipts, withdrawals, transfers                      ← actuals (for APE)
-#   ape_balance, ape_receipts, ape_withdrawals, ape_transfers      ← |actual-pred|/actual
-#   rec_pct_pred, outflow_pct_pred, transfer_pct_pred             ← ratio proportions used
+#   balance_pred, receipts_pred, withdrawals_pred, transfers_pred  â† GLM predictions
+#   balance, receipts, withdrawals, transfers                      â† actuals (for APE)
+#   ape_balance, ape_receipts, ape_withdrawals, ape_transfers      â† |actual-pred|/actual
+#   rec_pct_pred, outflow_pct_pred, transfer_pct_pred             â† ratio proportions used
 PREDICTION_SCHEMA = StructType([
     StructField("product",            StringType(), True),
     StructField("cohort",             StringType(), True),
     StructField("reporting_period",   StringType(), True),
     StructField("months_since_start", LongType(),   True),
-    # ── Predicted values ────────────────────────────────────────────────
+    # â”€â”€ Predicted values â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     StructField("balance_pred",       DoubleType(), True),
     StructField("receipts_pred",      DoubleType(), True),
     StructField("withdrawals_pred",   DoubleType(), True),
     StructField("transfers_pred",     DoubleType(), True),
-    # ── Actuals (joined from input features for APE computation) ────────
+    # â”€â”€ Actuals (joined from input features for APE computation) â”€â”€â”€â”€â”€â”€â”€â”€
     StructField("balance",            DoubleType(), True),
     StructField("receipts",           DoubleType(), True),
     StructField("withdrawals",        DoubleType(), True),
     StructField("transfers",          DoubleType(), True),
-    # ── APE per row = |actual - pred| / actual  (matches Excel formula) ─
+    # â”€â”€ APE per row = |actual - pred| / actual  (matches Excel formula) â”€
     StructField("ape_balance",        DoubleType(), True),
     StructField("ape_receipts",       DoubleType(), True),
     StructField("ape_withdrawals",    DoubleType(), True),
     StructField("ape_transfers",      DoubleType(), True),
-    # ── GLM ratio proportions used for this row ──────────────────────────
+    # â”€â”€ GLM ratio proportions used for this row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     StructField("rec_pct_pred",       DoubleType(), True),
     StructField("outflow_pct_pred",   DoubleType(), True),
     StructField("transfer_pct_pred",  DoubleType(), True),
@@ -2480,7 +2519,7 @@ def predict_product_partition(product_pdf: pd.DataFrame) -> pd.DataFrame:
                 "rec_pct_pred", "outflow_pct_pred", "transfer_pct_pred"]:
         result[col] = pd.to_numeric(result.get(col), errors="coerce") if col in result.columns else np.nan
 
-    # Compute APE per row — matches the Excel formula =ABS((actual-pred)/actual)
+    # Compute APE per row â€” matches the Excel formula =ABS((actual-pred)/actual)
     def safe_ape(actual, pred):
         actual = pd.to_numeric(actual, errors="coerce")
         pred   = pd.to_numeric(pred,   errors="coerce")
@@ -2541,9 +2580,49 @@ print(f"Predictions generated: {n_predictions} rows across {n_products} products
 print(f"Written to: {cfg.inference_predictions}")
 
 # COMMAND ----------
+# Final output roll-up: forecasts are produced per cohort, then summed up to
+# product x month. This is the product-level view the business consumes
+# (cohort-level detail stays in inference_predictions above).
+product_month_sdf = (
+    predictions_sdf
+    .groupBy("product", "reporting_period")
+    .agg(
+        F.sum("balance_pred").alias("balance_pred"),
+        F.sum("receipts_pred").alias("receipts_pred"),
+        F.sum("withdrawals_pred").alias("withdrawals_pred"),
+        F.sum("transfers_pred").alias("transfers_pred"),
+        F.sum("balance").alias("balance"),
+        F.sum("receipts").alias("receipts"),
+        F.sum("withdrawals").alias("withdrawals"),
+        F.sum("transfers").alias("transfers"),
+        F.countDistinct("cohort").alias("n_cohorts"),
+    )
+    # Product-month APE recomputed on the aggregated totals (not averaged from
+    # cohort APEs), matching how the business scores product-level accuracy.
+    .withColumn(
+        "ape_balance",
+        F.when(F.col("balance") != 0,
+               F.abs((F.col("balance") - F.col("balance_pred")) / F.col("balance")))
+    )
+    .withColumn("scored_at",     F.lit(scored_at))
+    .withColumn("model_name",    F.lit(model_name))
+    .withColumn("model_version", F.lit(str(model_version)))
+    .withColumn("model_alias",   F.lit(model_alias))
+)
+
+(
+    product_month_sdf
+    .write
+    .mode("append")
+    .option("mergeSchema", "true")
+    .saveAsTable(cfg.inference_predictions_product_month)
+)
+print(f"Product x month roll-up written to: {cfg.inference_predictions_product_month}")
+
+# COMMAND ----------
 # Log inference run to MLflow for Unity Catalog lineage.
 # This ties the inference batch back to the champion model run so
-# Catalog Explorer shows the full lineage: source table → model → output table.
+# Catalog Explorer shows the full lineage: source table â†’ model â†’ output table.
 mlflow.set_experiment(f"/Shared/scf_cohort/{catalog}_inference")
 with mlflow.start_run(run_name=f"batch_inference_{scored_at[:10]}"):
     mlflow.set_tag("model_alias", model_alias)
@@ -2584,6 +2663,7 @@ print(f"  Champion model : {model_name} v{model_version} (@{model_alias})")
 print(f"  Rows scored    : {n_predictions}")
 print(f"  Products       : {n_products}")
 print(f"  Output table   : {cfg.inference_predictions}")
+print(f"  ProductÃ—month  : {cfg.inference_predictions_product_month}")
 print(f"  Scored at      : {scored_at}")
 
 
@@ -2702,7 +2782,7 @@ print(f"Model monitoring complete: {len(monitoring_df)} products logged.")
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## Actual vs Predicted Charts
-# MAGIC One chart panel per product — Balance, Receipts, Withdrawals, Transfers.
+# MAGIC One chart panel per product â€” Balance, Receipts, Withdrawals, Transfers.
 # MAGIC Only rendered when actuals are available for the scored period.
 
 # COMMAND ----------
@@ -2726,7 +2806,7 @@ products_with_actuals = [
 ]
 
 if not products_with_actuals:
-    print("No actuals available yet for the scored period — charts will render after actuals land.")
+    print("No actuals available yet for the scored period â€” charts will render after actuals land.")
 else:
     for product in sorted(products_with_actuals):
         grp = (
@@ -2738,7 +2818,7 @@ else:
         x = range(len(periods))
 
         fig, axes = plt.subplots(2, 2, figsize=(14, 8))
-        fig.suptitle(f"{product}  —  Actual vs Predicted  ({latest_run[:10]})", fontsize=13, fontweight="bold")
+        fig.suptitle(f"{product}  â€”  Actual vs Predicted  ({latest_run[:10]})", fontsize=13, fontweight="bold")
 
         for ax, (actual_col, pred_col, label) in zip(axes.flat, FLOW_PAIRS):
             actual = grp[actual_col].tolist()
@@ -2748,7 +2828,7 @@ else:
             ax.set_title(label, fontsize=11)
             ax.set_xticks(x)
             ax.set_xticklabels(periods, rotation=30, ha="right", fontsize=8)
-            ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"£{v/1e6:.1f}M"))
+            ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"Â£{v/1e6:.1f}M"))
             ax.legend(fontsize=9)
             ax.grid(True, alpha=0.3)
 
@@ -2777,7 +2857,7 @@ if portfolio["balance"].notna().any():
     x = range(len(periods))
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 8))
-    fig.suptitle(f"Portfolio Total  —  Actual vs Predicted  ({latest_run[:10]})", fontsize=13, fontweight="bold")
+    fig.suptitle(f"Portfolio Total  â€”  Actual vs Predicted  ({latest_run[:10]})", fontsize=13, fontweight="bold")
 
     for ax, (actual_col, pred_col, label) in zip(axes.flat, FLOW_PAIRS):
         ax.plot(x, portfolio[actual_col], marker="o", label="Actual",    color="#1f77b4", linewidth=2)
@@ -2785,7 +2865,7 @@ if portfolio["balance"].notna().any():
         ax.set_title(label, fontsize=11)
         ax.set_xticks(x)
         ax.set_xticklabels(periods, rotation=30, ha="right", fontsize=8)
-        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"£{v/1e9:.2f}B"))
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"Â£{v/1e9:.2f}B"))
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
@@ -2797,7 +2877,7 @@ else:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## MAPE Heatmap — All Products × All Metrics
+# MAGIC ## MAPE Heatmap â€” All Products Ã— All Metrics
 
 # COMMAND ----------
 mape_cols = ["mape_balance", "mape_receipts", "mape_withdrawals", "mape_transfers"]
@@ -2825,12 +2905,12 @@ if available_mape_cols:
                         color="black" if val < 20 else "white")
 
     plt.colorbar(im, ax=ax, label="MAPE %")
-    ax.set_title(f"MAPE Heatmap by Product × Flow  ({latest_run[:10]})", fontsize=12, fontweight="bold")
+    ax.set_title(f"MAPE Heatmap by Product Ã— Flow  ({latest_run[:10]})", fontsize=12, fontweight="bold")
     plt.tight_layout()
     display(fig)
     plt.close(fig)
 else:
-    print("MAPE columns not available — heatmap requires actuals.")
+    print("MAPE columns not available â€” heatmap requires actuals.")
 
 
 ================================================================================
@@ -2934,7 +3014,7 @@ def load_versioned_reference(table_name: str, seed_pdf: pd.DataFrame) -> pd.Data
     return ref_full.toPandas()
 
 # COMMAND ----------
-# ── 1. Feature drift (covariate shift) ──────────────────────────────────────
+# â”€â”€ 1. Feature drift (covariate shift) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 reference_pdf = load_versioned_reference(cfg.volume_reference_data, current_pdf)
 for col in DRIFT_COLUMNS:
     current_pdf[col] = current_pdf[col].astype(float)
@@ -2948,7 +3028,7 @@ feature_drift["drift_type"] = "feature"
 print("Feature drift:\n", feature_drift)
 
 # COMMAND ----------
-# ── 2. Prediction / output drift ────────────────────────────────────────────
+# â”€â”€ 2. Prediction / output drift â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Compare the latest scored batch's prediction distribution against the frozen
 # prediction reference for the served version (same versioned discipline).
 pred_reference = load_versioned_reference(cfg.prediction_reference_data, current_preds)
@@ -2965,7 +3045,7 @@ prediction_drift["drift_type"] = "prediction"
 print("Prediction drift:\n", prediction_drift)
 
 # COMMAND ----------
-# ── 3. GLM extrapolation guard on delta_to_best_buy ─────────────────────────
+# â”€â”€ 3. GLM extrapolation guard on delta_to_best_buy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GLMs extrapolate linearly: predictions where delta_to_best_buy sits outside
 # the training [min, max] support are unreliable. Flag when too much of the
 # batch is out-of-range - the single most GLM-specific risk for this model.
@@ -2986,7 +3066,7 @@ print(f"Extrapolation guard ({EXTRAPOLATION_FEATURE}): "
       f"[{extrap['ref_min']:.4f}, {extrap['ref_max']:.4f}] -> {extrap['status']}")
 
 # COMMAND ----------
-# ── Persist all three reports to a single drift_results table ────────────────
+# â”€â”€ Persist all three reports to a single drift_results table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 drift_report = pd.concat(
     [feature_drift, prediction_drift, extrap_report], ignore_index=True
 )
@@ -3071,13 +3151,13 @@ results.append(check_schema_columns(
      "balance", "balance_lag_1", "delta_to_best_buy", "dbb_range"],
 ))
 results.append(check_row_count(features_df, expected_min=100))
-# Null checks — includes the two columns the model directly uses at score time
+# Null checks â€” includes the two columns the model directly uses at score time
 results.extend(check_null_rates(
     features_df,
     columns=["balance", "product", "cohort", "balance_lag_1", "dbb_range"],
     max_null_rate=cfg.NULL_RATE_FAIL_THRESHOLD,
 ))
-# delta_to_best_buy expected range: ±3 pp covers all realistic rate environments
+# delta_to_best_buy expected range: Â±3 pp covers all realistic rate environments
 results.append(check_value_range(features_df, "delta_to_best_buy", -3.0, 3.0))
 
 quality_df = pd.DataFrame(results)
@@ -3241,214 +3321,160 @@ FILE: src\inference\__init__.py
 
 
 ================================================================================
-FILE: src\training\00_feature_engineering_redshift.py
+FILE: src\training\00_feature_engineering.py
 ================================================================================
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Feature Engineering — Redshift Sales Features
+# MAGIC # 00 - Feature Engineering (GLM flow-ratio lookups)
 # MAGIC
-# MAGIC Reads sales transaction data from Redshift, computes aggregate features,
-# MAGIC and writes them to the Databricks Feature Store.
+# MAGIC The SCF model is a **Generalised Linear Model (GLM)**. It does **not**
+# MAGIC predict monthly balance/receipts/withdrawals/transfers directly â€” it
+# MAGIC predicts three **intermediate flow ratios** that are later combined to
+# MAGIC reconstruct balances and flows per cohort, then summed to
+# MAGIC `product Ã— month`.
 # MAGIC
-# MAGIC **Features created:**
-# MAGIC | Feature | Description |
-# MAGIC |---|---|
-# MAGIC | `sum_of_sales` | Total £ sales per join key |
-# MAGIC | `avg_sale_amount` | Average transaction value |
-# MAGIC | `sale_count` | Number of transactions |
-# MAGIC | `days_since_last_sale` | Recency — days since last transaction |
-# MAGIC | `sale_std` | Volatility of sales amounts |
-# MAGIC | `max_single_sale` | Largest single transaction |
-# MAGIC | `monthly_sale_avg` | Average monthly sales volume |
+# MAGIC This step reads the cohort matrix produced by `02_data_preprocessing.py`
+# MAGIC (`silver_agg_cohort`), validates the ratio ranges the model requires, and
+# MAGIC builds the **3 lookup tables** used to project flows:
 # MAGIC
-# MAGIC These are joined to the existing 3 features already in the Feature Store.
+# MAGIC | Lookup | Ratio | Indexed by |
+# MAGIC |---|---|---|
+# MAGIC | `receipts_ratio_lookup`  | `rec_prop`                     | cohort age Ã— rate bucket |
+# MAGIC | `outflows_ratio_lookup`  | `outflow_prop`                 | cohort age Ã— rate bucket |
+# MAGIC | `transfers_ratio_lookup` | transfer share (1 âˆ’ wd_prop)   | rate bucket only |
+# MAGIC
+# MAGIC **Range checks (model-owner requirement):** along with `outflow_prop`,
+# MAGIC `rec_prop` (â‰¥ 0, log-link) and `withdrawal_prop_of_outflow` (âˆˆ [0, 1],
+# MAGIC binomial) are validated here before the ratios feed the GLM.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog",            "pd_dtl_ds_dev")
-dbutils.widgets.text("schema",             "savings_cashflow")
-dbutils.widgets.text("feature_schema",     "feature_store")
-dbutils.widgets.text("redshift_host",      "")
-dbutils.widgets.text("redshift_port",      "5439")
-dbutils.widgets.text("redshift_db",        "")
-dbutils.widgets.text("redshift_schema",    "sales")
-dbutils.widgets.text("redshift_table",     "transactions")
-dbutils.widgets.text("join_key",           "account_id")
-dbutils.widgets.text("secret_scope",       "scf-cohort-dev")
-dbutils.widgets.text("as_of_date",         "")
+dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("schema", "savings_cashflow")
+dbutils.widgets.text("feature_schema", "feature_store")
+catalog = dbutils.widgets.get("catalog")
+schema = dbutils.widgets.get("schema")
+feature_schema = dbutils.widgets.get("feature_schema")
 
-catalog         = dbutils.widgets.get("catalog")
-schema          = dbutils.widgets.get("schema")
-feature_schema  = dbutils.widgets.get("feature_schema")
-redshift_host   = dbutils.widgets.get("redshift_host")
-redshift_port   = dbutils.widgets.get("redshift_port")
-redshift_db     = dbutils.widgets.get("redshift_db")
-redshift_schema = dbutils.widgets.get("redshift_schema")
-redshift_table  = dbutils.widgets.get("redshift_table")
-join_key        = dbutils.widgets.get("join_key")
-secret_scope    = dbutils.widgets.get("secret_scope")
-as_of_date      = dbutils.widgets.get("as_of_date") or None
-
-import sys, datetime
+import sys
 sys.path.append("../..")
 from src.common.config import get_config
-from databricks.feature_engineering import FeatureEngineeringClient
 import pyspark.sql.functions as F
 
 cfg = get_config(catalog, schema, feature_schema=feature_schema)
-fe  = FeatureEngineeringClient()
-
-# Create feature_store schema if not exists
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{feature_schema}")
 
-cutoff = as_of_date or datetime.date.today().isoformat()
-print(f"Feature engineering as-of: {cutoff}")
-print(f"Feature tables → {catalog}.{feature_schema}.*")
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## 1 â€” Read the cohort matrix
+
+# COMMAND ----------
+agg = spark.table(cfg.silver_agg_cohort)
+print(f"silver_agg_cohort rows: {agg.count():,}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 1 — Read from Redshift
+# MAGIC ## 2 â€” Range checks on the GLM flow ratios
+# MAGIC The three GLMs assume:
+# MAGIC   * `rec_prop`                  â‰¥ 0     (Gamma/Tweedie log-link)
+# MAGIC   * `outflow_prop`              âˆˆ [0,1] (Binomial)
+# MAGIC   * `withdrawal_prop_of_outflow`âˆˆ [0,1] (Binomial)
+# MAGIC Out-of-range values are counted, reported, and clamped so a single dirty
+# MAGIC cohort can't blow up the fit.
 
 # COMMAND ----------
-# Credentials pulled from Databricks secret scope — never hardcoded
-rs_user     = dbutils.secrets.get(secret_scope, "redshift-user")
-rs_password = dbutils.secrets.get(secret_scope, "redshift-password")
+RANGE_SPECS = {
+    "rec_prop": (0.0, None),
+    "outflow_prop": (0.0, 1.0),
+    "withdrawal_prop_of_outflow": (0.0, 1.0),
+}
 
-jdbc_url = (
-    f"jdbc:redshift://{redshift_host}:{redshift_port}/{redshift_db}"
-    f"?user={rs_user}&password={rs_password}&ssl=true"
+for col, (lo, hi) in RANGE_SPECS.items():
+    cond = F.lit(False)
+    if lo is not None:
+        cond = cond | (F.col(col) < F.lit(lo))
+    if hi is not None:
+        cond = cond | (F.col(col) > F.lit(hi))
+    n_bad = agg.filter(cond).count()
+    print(f"  {col}: {n_bad} rows outside [{lo}, {hi}]")
+    if lo is not None:
+        agg = agg.withColumn(col, F.greatest(F.col(col), F.lit(lo)))
+    if hi is not None:
+        agg = agg.withColumn(col, F.least(F.col(col), F.lit(hi)))
+
+# Transfer share is the complement of the withdrawal split.
+agg = agg.withColumn(
+    "transfer_prop_of_outflow", F.lit(1.0) - F.col("withdrawal_prop_of_outflow")
 )
-
-print(f"Reading {redshift_schema}.{redshift_table} from Redshift...")
-sales_sdf = (
-    spark.read
-    .format("jdbc")
-    .option("url",      jdbc_url)
-    .option("dbtable",  f"{redshift_schema}.{redshift_table}")
-    .option("driver",   "com.amazon.redshift.jdbc42.Driver")
-    .option("numPartitions", 8)
-    .option("fetchsize", 10000)
-    .load()
-)
-
-# Filter to as-of date (point-in-time correct features — no data leakage)
-if "sale_date" in sales_sdf.columns:
-    sales_sdf = sales_sdf.filter(F.col("sale_date") <= cutoff)
-
-print(f"Rows loaded: {sales_sdf.count():,}")
-print(f"Columns: {sales_sdf.columns}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 2 — Compute Aggregate Features
+# MAGIC ## 3 â€” Build the 3 lookup tables
 
 # COMMAND ----------
-today = F.lit(cutoff).cast("date")
+# Receipts & outflows: indexed by cohort age (months_since_start) Ã— rate bucket.
+receipts_lookup = (
+    agg.groupBy("months_since_start", "dbb_range")
+    .agg(F.mean("rec_prop").alias("rec_prop"), F.count("*").alias("n_obs"))
+)
+outflows_lookup = (
+    agg.groupBy("months_since_start", "dbb_range")
+    .agg(F.mean("outflow_prop").alias("outflow_prop"), F.count("*").alias("n_obs"))
+)
 
-features_sdf = (
-    sales_sdf
-    .groupBy(join_key)
+# Transfers: indexed by rate bucket only.
+transfers_lookup = (
+    agg.groupBy("dbb_range")
     .agg(
-        F.sum("amount").alias("sum_of_sales"),
-        F.avg("amount").alias("avg_sale_amount"),
-        F.count("*").alias("sale_count"),
-        F.stddev("amount").alias("sale_std"),
-        F.max("amount").alias("max_single_sale"),
-        F.max("sale_date").alias("last_sale_date"),
-        F.min("sale_date").alias("first_sale_date"),
+        F.mean("transfer_prop_of_outflow").alias("transfer_prop_of_outflow"),
+        F.count("*").alias("n_obs"),
     )
-    .withColumn(
-        "days_since_last_sale",
-        F.datediff(today, F.col("last_sale_date"))
-    )
-    .withColumn(
-        "tenure_days",
-        F.datediff(F.col("last_sale_date"), F.col("first_sale_date"))
-    )
-    .withColumn(
-        "monthly_sale_avg",
-        F.when(F.col("tenure_days") > 0,
-               F.col("sum_of_sales") / (F.col("tenure_days") / 30.0)
-        ).otherwise(F.col("sum_of_sales"))
-    )
-    .withColumn("feature_date", F.lit(cutoff))
-    # Null-safe defaults
-    .fillna({"sale_std": 0.0, "days_since_last_sale": 9999})
 )
 
-print(f"Features computed for {features_sdf.count():,} {join_key}s")
-display(features_sdf.limit(5))
+print(f"receipts_lookup rows:  {receipts_lookup.count():,}")
+print(f"outflows_lookup rows:  {outflows_lookup.count():,}")
+print(f"transfers_lookup rows: {transfers_lookup.count():,}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 3 — Write to Feature Store (merge on join_key)
+# MAGIC ## 4 â€” Persist lookup tables (Feature Store when available)
 
 # COMMAND ----------
-try:
-    fe.create_table(
-        name=cfg.sales_features,
-        primary_keys=[join_key],
-        df=features_sdf,
-        description=(
-            f"Sales aggregate features computed from Redshift {redshift_schema}.{redshift_table}. "
-            f"Primary key: {join_key}. Updated as-of: {cutoff}."
-        ),
-    )
-    print(f"Feature table created: {cfg.sales_features}")
-except Exception:
-    fe.write_table(name=cfg.sales_features, df=features_sdf, mode="merge")
-    print(f"Feature table merged: {cfg.sales_features} ({features_sdf.count():,} rows)")
+def _write(df, name, pks, desc):
+    try:
+        from databricks.feature_engineering import FeatureEngineeringClient
+        fe = FeatureEngineeringClient()
+        try:
+            fe.create_table(name=name, primary_keys=pks, df=df, description=desc)
+            print(f"Feature table created: {name}")
+        except Exception:
+            fe.write_table(name=name, df=df, mode="merge")
+            print(f"Feature table merged: {name}")
+    except ImportError:
+        df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(name)
+        print(f"Feature Engineering SDK unavailable â€” wrote plain Delta: {name}")
 
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## 4 — Join with Existing Feature Store Table
 
-# COMMAND ----------
-# Enrich the existing 3 features with the new sales features
-# Result is stored in a combined feature table for model training
-existing_features = spark.table(cfg.feature_store_cohort)
-sales_features    = spark.table(cfg.sales_features)
-
-enriched_sdf = existing_features.join(
-    sales_features.drop("feature_date"),
-    on=join_key,
-    how="left"
+_write(
+    receipts_lookup, cfg.receipts_lookup,
+    ["months_since_start", "dbb_range"],
+    "GLM receipts ratio (rec_prop) indexed by cohort age Ã— rate bucket.",
+)
+_write(
+    outflows_lookup, cfg.outflows_lookup,
+    ["months_since_start", "dbb_range"],
+    "GLM outflow ratio (outflow_prop) indexed by cohort age Ã— rate bucket.",
+)
+_write(
+    transfers_lookup, cfg.transfers_lookup,
+    ["dbb_range"],
+    "GLM transfer share (1 - withdrawal_prop_of_outflow) indexed by rate bucket.",
 )
 
-try:
-    fe.create_table(
-        name=cfg.feature_store_enriched,
-        primary_keys=[join_key],
-        df=enriched_sdf,
-        description=(
-            f"Enriched feature table: existing 3 features + Redshift sales aggregates. "
-            f"Used for model training. Updated as-of: {cutoff}."
-        ),
-    )
-except Exception:
-    fe.write_table(name=cfg.feature_store_enriched, df=enriched_sdf, mode="merge")
-
-print(f"Enriched feature table: {cfg.feature_store_enriched}")
-print(f"Total features: {len(enriched_sdf.columns) - 1}")  # -1 for key
-
 # COMMAND ----------
-# Feature summary for MLflow logging
-summary = features_sdf.agg(
-    F.sum("sum_of_sales").alias("total_portfolio_sales"),
-    F.avg("avg_sale_amount").alias("portfolio_avg_transaction"),
-    F.sum("sale_count").alias("total_transactions"),
-    F.avg("days_since_last_sale").alias("avg_recency_days"),
-).collect()[0]
-
-print("\nPortfolio summary:")
-print(f"  Total sales      : £{summary['total_portfolio_sales']:,.0f}")
-print(f"  Avg transaction  : £{summary['portfolio_avg_transaction']:.2f}")
-print(f"  Total tx count   : {summary['total_transactions']:,}")
-print(f"  Avg recency days : {summary['avg_recency_days']:.0f}")
-
-dbutils.jobs.taskValues.set(key="feature_table",    value=cfg.sales_features)
-dbutils.jobs.taskValues.set(key="enriched_table",   value=cfg.feature_store_enriched)
-dbutils.jobs.taskValues.set(key="n_entities",       value=int(features_sdf.count()))
-dbutils.jobs.taskValues.set(key="feature_date",     value=cutoff)
+assert receipts_lookup.count() > 0, "receipts_lookup empty - aborting pipeline"
+assert outflows_lookup.count() > 0, "outflows_lookup empty - aborting pipeline"
+assert transfers_lookup.count() > 0, "transfers_lookup empty - aborting pipeline"
+print("Feature engineering complete.")
 
 
 ================================================================================
@@ -3576,9 +3602,11 @@ results.append(check_row_count(silver_df, MIN_ROWS))
 # Null rates on model features
 results.extend(check_null_rates(silver_df, FEATURE_COLUMNS, MAX_NULL_RATE))
 
-# Proportion ranges: outflow_prop and rec_prop must be in [0, 1] after capping
+# Proportion ranges: outflow_prop and withdrawal_prop_of_outflow are true
+# proportions in [0, 1]; rec_prop can exceed balance so it uses a wider ceiling.
 results.append(check_value_range(silver_df, "outflow_prop", 0.0, 1.0))
 results.append(check_value_range(silver_df, "rec_prop", 0.0, 5.0))  # receipts can exceed balance
+results.append(check_value_range(silver_df, "withdrawal_prop_of_outflow", 0.0, 1.0))
 
 # Product coverage: need at least 5 products to train a meaningful portfolio
 pdf = silver_df.select("product").distinct().toPandas()
@@ -3605,7 +3633,7 @@ if not failed.empty:
     for _, row in failed.iterrows():
         print(f"  FAIL  {row['check']}: {row['detail']}")
     raise AssertionError(
-        f"{len(failed)} validation check(s) failed — aborting training. "
+        f"{len(failed)} validation check(s) failed â€” aborting training. "
         "See data_quality_results table for details."
     )
 
@@ -3627,7 +3655,7 @@ FILE: src\training\02_data_preprocessing.py
 # MAGIC
 # MAGIC Feature store write uses **Databricks Feature Engineering Client**
 # MAGIC (`feature_engineering.write_table`) for native Unity Catalog lineage
-# MAGIC tracking (Catalog Explorer shows source table → feature table → model).
+# MAGIC tracking (Catalog Explorer shows source table â†’ feature table â†’ model).
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
@@ -3697,9 +3725,9 @@ agg_df = (
         {
             'reporting period': 'max',
             'period balance': 'sum',
-            '£ withdrawal': 'sum',
-            '£ receipt': 'sum',
-            '£ internal transfer': 'sum',
+            'Â£ withdrawal': 'sum',
+            'Â£ receipt': 'sum',
+            'Â£ internal transfer': 'sum',
             'interest rate': 'mean',
             'best_buy': 'mean',
             'account tenure (months)': 'mean',
@@ -3745,6 +3773,20 @@ agg_df = agg_df[~(agg_df['increasing_size'] == True)]  # noqa: E712
 agg_df.loc[agg_df['outflow_prop'] > 1, 'outflow_prop'] = 1
 
 # COMMAND ----------
+# Range checks on the GLM flow ratios (model-owner requirement): along with
+# outflow_prop above, rec_prop must be >= 0 (Gamma/Tweedie log-link) and
+# withdrawal_prop_of_outflow must lie in [0, 1] (Binomial). Report how many
+# rows fall outside range, then clamp so a single dirty cohort can't break
+# the GLM fit downstream.
+_rec_bad = int((agg_df['rec_prop'] < 0).sum())
+_wpo_bad = int(((agg_df['withdrawal_prop_of_outflow'] < 0) |
+                (agg_df['withdrawal_prop_of_outflow'] > 1)).sum())
+print(f"rec_prop < 0                : {_rec_bad} rows (clamped to 0)")
+print(f"withdrawal_prop_of_outflow  : {_wpo_bad} rows outside [0,1] (clamped)")
+agg_df['rec_prop'] = agg_df['rec_prop'].clip(lower=0)
+agg_df['withdrawal_prop_of_outflow'] = agg_df['withdrawal_prop_of_outflow'].clip(0, 1)
+
+# COMMAND ----------
 agg_df.loc[agg_df['withdrawal_prop_of_outflow'].isnull(), 'withdrawal_prop_of_outflow'] = 0
 
 # Delta-to-best-buy: how far a cohort's rate sits from the market best-buy rate,
@@ -3767,8 +3809,8 @@ spark.createDataFrame(agg_df).write.mode("overwrite").option(
 
 # Write to Feature Store via Databricks Feature Engineering Client.
 # This registers feature table metadata in Unity Catalog so the lineage
-# graph shows: raw_base_data → feature_store_cohort → scf_cohort_model.
-# Primary key = (cohort, product, months_since_start) — uniquely identifies
+# graph shows: raw_base_data â†’ feature_store_cohort â†’ scf_cohort_model.
+# Primary key = (cohort, product, months_since_start) â€” uniquely identifies
 # one row in the cohort projection matrix.
 try:
     from databricks.feature_engineering import FeatureEngineeringClient
@@ -3782,13 +3824,13 @@ try:
             df=feature_sdf,
             description=(
                 "Cohort-level engineered features for the SCF GLM model. "
-                "Primary key: cohort × product × months_since_start. "
+                "Primary key: cohort Ã— product Ã— months_since_start. "
                 "Written by training/02_data_preprocessing.py."
             ),
         )
         print(f"Feature table created: {cfg.feature_store_table}")
     except Exception:
-        # Table exists — merge new data
+        # Table exists â€” merge new data
         fe.write_table(
             name=cfg.feature_store_table,
             df=feature_sdf,
@@ -3800,7 +3842,7 @@ except ImportError:
     spark.createDataFrame(agg_df).write.mode("overwrite").option(
         "mergeSchema", "true"
     ).saveAsTable(cfg.feature_store_table)
-    print(f"Feature Engineering SDK not available — wrote plain Delta: {cfg.feature_store_table}")
+    print(f"Feature Engineering SDK not available â€” wrote plain Delta: {cfg.feature_store_table}")
 
 record_dataset_version(
     spark=spark,
@@ -3810,7 +3852,7 @@ record_dataset_version(
     environment=catalog,
 )
 
-# Write training_feature_snapshots — frozen feature distribution at training time.
+# Write training_feature_snapshots â€” frozen feature distribution at training time.
 # Stored as a versioned append so it survives Delta VACUUM and allows exact
 # reproduction of any historical training run via VERSION AS OF.
 import datetime as _dt
@@ -3836,22 +3878,24 @@ FILE: src\training\03_model_training.py
 # MAGIC # 03 - Model Training
 # MAGIC Runs `ModelingPipeline.run_for_product()` for every product with:
 # MAGIC
-# MAGIC **1. Hyperparameter grid search** — `month_end` × `drop_month2`
+# MAGIC **1. Hyperparameter grid search** â€” `month_end` Ã— `drop_month2`
 # MAGIC    Each trial logged as a **nested MLflow child run** (visible in MLflow
 # MAGIC    UI as a collapsible group under the parent HPO run).
 # MAGIC
-# MAGIC **2. Baseline benchmark** — naive last-value forecast (balance_lag_1 as
+# MAGIC **2. Baseline benchmark** â€” naive last-value forecast (balance_lag_1 as
 # MAGIC    prediction). GLM must beat baseline MAPE or a warning is raised.
 # MAGIC
-# MAGIC **3. Rolling-origin cross-validation** — 3 temporal train/test splits
+# MAGIC **3. Rolling-origin cross-validation** â€” 3 temporal train/test splits
 # MAGIC    to estimate generalisation error before the final fit on full data.
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("cutoff_period", "2025-01")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
+model_schema = dbutils.widgets.get("model_schema")
 cutoff_period = dbutils.widgets.get("cutoff_period")
 
 import sys, pickle, datetime, mlflow
@@ -3879,7 +3923,7 @@ PARAM_GRID = [
 ]
 
 # Rolling-origin CV splits: train up to each cutoff, test on next window.
-# Uses 3 folds — enough to estimate generalisation error for quarterly retrains.
+# Uses 3 folds â€” enough to estimate generalisation error for quarterly retrains.
 from src.common.glm_core import Evaluator
 import numpy as np
 
@@ -3934,7 +3978,7 @@ benchmark_results = {}
 mlflow.set_registry_uri("databricks-uc")
 mlflow.set_experiment(f"/Shared/scf_cohort/{catalog}_hyperparameter_tuning")
 
-# Parent MLflow run — one per training cycle
+# Parent MLflow run â€” one per training cycle
 with mlflow.start_run(run_name=f"hpo_training_{cutoff_period}") as parent_run:
     mlflow.log_param("cutoff_period",   cutoff_period)
     mlflow.log_param("param_grid_size", len(PARAM_GRID))
@@ -3948,15 +3992,15 @@ with mlflow.start_run(run_name=f"hpo_training_{cutoff_period}") as parent_run:
         best_params = PARAM_GRID[0]
         safe_name   = product.replace(" ", "_").replace("(", "").replace(")", "")
 
-        # ── Baseline benchmark ─────────────────────────────────────────
+        # â”€â”€ Baseline benchmark â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         b_mape = baseline_mape(agg_df, product)
         benchmark_results[product] = b_mape
         print(f"  Baseline MAPE (naive last-value): {b_mape:.3f}")
         mlflow.log_metric(f"{safe_name}__baseline_mape", b_mape)
 
-        # ── Grid search with nested child runs ────────────────────────
+        # â”€â”€ Grid search with nested child runs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         for params in PARAM_GRID:
-            # Each trial = one child run in MLflow → visible in UI
+            # Each trial = one child run in MLflow â†’ visible in UI
             with mlflow.start_run(
                 run_name=f"{safe_name}__mend{params['month_end']}_dm2{params['drop_month2']}",
                 nested=True,
@@ -4013,7 +4057,7 @@ with mlflow.start_run(run_name=f"hpo_training_{cutoff_period}") as parent_run:
             if not beats_baseline:
                 print(f"  WARNING: GLM MAPE {best_mape:.3f} does not beat baseline {b_mape:.3f} for {product}")
             else:
-                print(f"  Best: {best_params}  val_mape={best_mape:.3f}  vs baseline={b_mape:.3f} ✓")
+                print(f"  Best: {best_params}  val_mape={best_mape:.3f}  vs baseline={b_mape:.3f} âœ“")
         else:
             print(f"  WARNING: all param configs failed for {product}")
 
@@ -4035,8 +4079,9 @@ print(f"Products beating naive baseline: {products_beating_baseline}/{len(all_re
 # can pick up the exact same fitted objects without retraining. UC Volumes
 # are addressable as normal filesystem paths on UC-enabled clusters - no
 # dbfs:/ prefix or dbutils.fs needed for plain Python file I/O.
-VOLUME_PATH = f"/Volumes/{catalog}/{schema}/model_artifacts"
-spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.{schema}.model_artifacts")
+VOLUME_PATH = f"/Volumes/{catalog}/{model_schema}/model_artifacts"
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{model_schema}")
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.{model_schema}.model_artifacts")
 
 artifact = {
     "results": all_results,
@@ -4062,24 +4107,26 @@ FILE: src\training\04b_model_validation.py
 # MAGIC Databricks MLOps lifecycle diagram.
 # MAGIC
 # MAGIC **Validation checks run:**
-# MAGIC 1. **Description check** — Has the data scientist documented the model version?
-# MAGIC 2. **Performance metric check** — Is Challenger MAPE ≤ Champion MAPE?
-# MAGIC    (first run always passes — no champion to beat)
-# MAGIC 3. **Business metric check** — Total projected balance (Challenger vs Champion)
+# MAGIC 1. **Description check** â€” Has the data scientist documented the model version?
+# MAGIC 2. **Performance metric check** â€” Is Challenger MAPE â‰¤ Champion MAPE?
+# MAGIC    (first run always passes â€” no champion to beat)
+# MAGIC 3. **Business metric check** â€” Total projected balance (Challenger vs Champion)
 # MAGIC    as a proxy for revenue impact; must be within an acceptable range.
-# MAGIC 4. **Product coverage check** — Challenger must cover ≥ same products as Champion.
+# MAGIC 4. **Product coverage check** â€” Challenger must cover â‰¥ same products as Champion.
 # MAGIC
-# MAGIC If all checks pass → sets `validation_passed=true` task value →
+# MAGIC If all checks pass â†’ sets `validation_passed=true` task value â†’
 # MAGIC `05_model_registration.py` promotes @challenger to @champion.
-# MAGIC If any check fails → sets `validation_passed=false` → challenger is rejected.
+# MAGIC If any check fails â†’ sets `validation_passed=false` â†’ challenger is rejected.
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("model_name", "")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 
 import sys, pickle, datetime
 sys.path.append("../..")
@@ -4094,11 +4141,11 @@ import matplotlib.pyplot as plt
 mlflow.set_registry_uri("databricks-uc")
 cfg = get_config(catalog, schema)
 client = MlflowClient()
-VOLUME_PATH = f"/Volumes/{catalog}/{schema}/model_artifacts"
+VOLUME_PATH = f"/Volumes/{catalog}/{model_schema}/model_artifacts"
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 1 — Fetch Challenger Model Information
+# MAGIC ## 1 â€” Fetch Challenger Model Information
 
 # COMMAND ----------
 portfolio_mape = dbutils.jobs.taskValues.get(taskKey="model_evaluation", key="portfolio_mape")
@@ -4106,7 +4153,7 @@ n_products_evaluated = int(
     dbutils.jobs.taskValues.get(taskKey="model_evaluation", key="n_products_evaluated", default=0)
 )
 
-# Challenger is the version just trained — registered by 05 registration task
+# Challenger is the version just trained â€” registered by 05 registration task
 # In the validation flow, the challenger hasn't been registered yet so we use
 # the evaluation artifact to derive validation metrics.
 with open(f"{VOLUME_PATH}/latest_training_run.pkl", "rb") as f:
@@ -4122,7 +4169,7 @@ print(f"  Portfolio MAPE: {portfolio_mape:.4f}%")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 2 — Check 1: Description
+# MAGIC ## 2 â€” Check 1: Description
 # MAGIC Has the data scientist provided a model description and artifact documentation?
 
 # COMMAND ----------
@@ -4140,7 +4187,7 @@ print(f"  has_description       : {has_description}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 3 — Check 2: Performance Metric (MAPE)
+# MAGIC ## 3 â€” Check 2: Performance Metric (MAPE)
 # MAGIC Compare Challenger MAPE against current Champion MAPE.
 # MAGIC Challenger passes if it beats champion OR no champion exists yet.
 
@@ -4155,14 +4202,14 @@ try:
     champion_n_products = int(champ_run.data.params.get("n_products", 0))
     print(f"Champion  MAPE: {champion_mape:.4f}%  |  products: {champion_n_products}")
 except Exception:
-    print("No existing champion — challenger passes by default (first run).")
+    print("No existing champion â€” challenger passes by default (first run).")
 
 challenger_mape = float(portfolio_mape)
 print(f"Challenger MAPE: {challenger_mape:.4f}%  |  products: {len(all_results)}")
 
 if champion_mape is None:
     mape_passed = True
-    mape_reason = "No champion exists — first run, challenger promoted by default."
+    mape_reason = "No champion exists â€” first run, challenger promoted by default."
 else:
     improvement_pct = (champion_mape - challenger_mape) / champion_mape * 100
     mape_passed = improvement_pct >= -5.0   # allow up to 5% regression before blocking
@@ -4174,7 +4221,7 @@ print(f"\nMAPE check: {mape_reason}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 4 — Check 3: Business Metrics — Total Projected Balance
+# MAGIC ## 4 â€” Check 3: Business Metrics â€” Total Projected Balance
 # MAGIC
 # MAGIC The equivalent of "Revenue Impacted" for savings cashflow is the
 # MAGIC **total projected balance** across all cohorts and products.
@@ -4207,28 +4254,28 @@ try:
         .toPandas()
     )
     champion_total = champ_preds["balance_pred"].sum()
-    print(f"Champion total projected balance : £{champion_total:,.0f}")
+    print(f"Champion total projected balance : Â£{champion_total:,.0f}")
 except Exception as e:
-    print(f"No champion inference predictions available ({e}) — skipping champion comparison.")
+    print(f"No champion inference predictions available ({e}) â€” skipping champion comparison.")
 
-print(f"Challenger total projected balance: £{challenger_total:,.0f}")
+print(f"Challenger total projected balance: Â£{challenger_total:,.0f}")
 
-# Business metric passes if challenger is within ±30% of champion (or no champion)
+# Business metric passes if challenger is within Â±30% of champion (or no champion)
 if champion_total == 0:
     business_metric_passed = True
-    biz_reason = "No champion predictions available — business metric check skipped."
+    biz_reason = "No champion predictions available â€” business metric check skipped."
 else:
     deviation_pct = abs(challenger_total - champion_total) / champion_total * 100
     business_metric_passed = deviation_pct <= 30.0
     biz_reason = (
-        f"Challenger £{challenger_total:,.0f} vs Champion £{champion_total:,.0f} "
+        f"Challenger Â£{challenger_total:,.0f} vs Champion Â£{champion_total:,.0f} "
         f"({deviation_pct:.1f}% deviation). {'PASS' if business_metric_passed else 'FAIL >30%'}"
     )
 print(f"Business metric check: {biz_reason}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ### Business Metrics — Projected Balance: Challenger vs Champion
+# MAGIC ### Business Metrics â€” Projected Balance: Challenger vs Champion
 
 # COMMAND ----------
 fig, ax = plt.subplots(figsize=(7, 5))
@@ -4239,14 +4286,14 @@ colours  = ["#6666FF", "#FF6644"]
 bars = ax.bar(aliases, totals, color=colours, width=0.5)
 ax.set_title("Business Metrics - Total Projected Balance", fontsize=13, fontweight="bold")
 ax.set_xlabel("Model Alias")
-ax.set_ylabel("Total Projected Balance (£)")
+ax.set_ylabel("Total Projected Balance (Â£)")
 ax.yaxis.set_major_formatter(
-    matplotlib.ticker.FuncFormatter(lambda x, _: f"£{x/1e6:.1f}M" if x >= 1e6 else f"£{x/1e3:.0f}k")
+    matplotlib.ticker.FuncFormatter(lambda x, _: f"Â£{x/1e6:.1f}M" if x >= 1e6 else f"Â£{x/1e3:.0f}k")
 )
 for bar, val in zip(bars, totals):
     if val > 0:
         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() * 1.01,
-                f"£{val:,.0f}", ha="center", va="bottom", fontsize=10)
+                f"Â£{val:,.0f}", ha="center", va="bottom", fontsize=10)
 
 plt.tight_layout()
 plt.savefig("/tmp/business_metrics_balance.png", dpi=120)
@@ -4255,7 +4302,7 @@ print("Chart saved to /tmp/business_metrics_balance.png")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 5 — Check 4: Product Coverage
+# MAGIC ## 5 â€” Check 4: Product Coverage
 # MAGIC Challenger must cover at least as many products as the champion.
 
 # COMMAND ----------
@@ -4265,13 +4312,13 @@ if champion_n_products > 0:
     coverage_passed = len(all_results) >= champion_n_products
     coverage_reason = (
         f"Challenger products: {len(all_results)}  |  Champion products: {champion_n_products}. "
-        f"{'PASS' if coverage_passed else 'FAIL — challenger covers fewer products'}"
+        f"{'PASS' if coverage_passed else 'FAIL â€” challenger covers fewer products'}"
     )
 print(f"Coverage check: {coverage_reason}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 6 — Validation Results Summary
+# MAGIC ## 6 â€” Validation Results Summary
 
 # COMMAND ----------
 validation_results = {
@@ -4287,11 +4334,11 @@ validation_results = {
     "validated_at":          datetime.datetime.utcnow().isoformat(),
 }
 
-print("\n── Validation Results ────────────────────────────────")
+print("\nâ”€â”€ Validation Results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
 for k, v in validation_results.items():
     status = ""
     if k in ("has_description", "mape_passed", "business_metric_passed", "coverage_passed"):
-        status = "  ✓" if v == "True" else "  ✗ FAILED"
+        status = "  âœ“" if v == "True" else "  âœ— FAILED"
     print(f"  {k:30s}: {v}{status}")
 
 # COMMAND ----------
@@ -4303,7 +4350,7 @@ validation_passed = all([
 ])
 
 if validation_passed:
-    print("\n✓ All validation checks passed — challenger approved for promotion to @champion.")
+    print("\nâœ“ All validation checks passed â€” challenger approved for promotion to @champion.")
 else:
     failed = [k for k, v in {
         "has_description": has_description,
@@ -4311,15 +4358,15 @@ else:
         "business_metric_passed": business_metric_passed,
         "coverage_passed": coverage_passed,
     }.items() if not v]
-    print(f"\n✗ Validation FAILED — checks failed: {failed}")
+    print(f"\nâœ— Validation FAILED â€” checks failed: {failed}")
     print("  Challenger will be tagged as 'rejected' and archived.")
 
 # COMMAND ----------
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 7 — Write model_approvals (Regulatory Audit Table)
+# MAGIC ## 7 â€” Write model_approvals (Regulatory Audit Table)
 # MAGIC Records every FMC approval/rejection decision with approver, version,
-# MAGIC timestamp — required for model risk management and regulatory audit.
+# MAGIC timestamp â€” required for model risk management and regulatory audit.
 
 # COMMAND ----------
 import datetime as dt
@@ -4382,8 +4429,10 @@ FILE: src\training\04_model_evaluation.py
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
+model_schema = dbutils.widgets.get("model_schema")
 
 import sys, pickle, datetime
 sys.path.append("../..")
@@ -4393,7 +4442,7 @@ import pandas as pd
 import numpy as np
 
 cfg = get_config(catalog, schema)
-VOLUME_PATH = f"/Volumes/{catalog}/{schema}/model_artifacts"
+VOLUME_PATH = f"/Volumes/{catalog}/{model_schema}/model_artifacts"
 
 # COMMAND ----------
 with open(f"{VOLUME_PATH}/latest_training_run.pkl", "rb") as f:
@@ -4420,7 +4469,7 @@ rows = []
 for product, res in all_results.items():
     metrics = res.get("metrics")
     if not metrics:
-        print(f"WARNING: no metrics for product={product} — skipped")
+        print(f"WARNING: no metrics for product={product} â€” skipped")
         continue
 
     row = {"product": product, "evaluated_at": datetime.datetime.utcnow().isoformat()}
@@ -4443,12 +4492,12 @@ for product, res in all_results.items():
         row["beats_baseline"] = None
 
     rows.append(row)
-    status = "✓" if row.get("beats_baseline") else "✗ WARN"
+    status = "âœ“" if row.get("beats_baseline") else "âœ— WARN"
     print(f"  {status}  {product}: GLM={glm_mape:.2f}%  baseline={baseline:.2f}%  "
           f"improvement={row.get('improvement_vs_baseline_pct', 'N/A')}%")
 
 metrics_df = pd.DataFrame(rows)
-assert not metrics_df.empty, "No products produced evaluation metrics — aborting pipeline"
+assert not metrics_df.empty, "No products produced evaluation metrics â€” aborting pipeline"
 
 # Portfolio-level summary
 portfolio_mape = metrics_df["mape_balance"].mean()
@@ -4487,18 +4536,18 @@ FILE: src\training\05a_fmc_validation_gate.py
 # MAGIC
 # MAGIC **Flow:**
 # MAGIC ```
-# MAGIC 04b_model_validation  ──▶  05a_fmc_validation_gate
-# MAGIC                                │
+# MAGIC 04b_model_validation  â”€â”€â–¶  05a_fmc_validation_gate
+# MAGIC                                â”‚
 # MAGIC                     Write PENDING entry to model_approvals
 # MAGIC                     Send notification to FMC reviewers
-# MAGIC                                │
+# MAGIC                                â”‚
 # MAGIC                     Poll model_approvals every 5 min
 # MAGIC                     for up to fmc_timeout_minutes (default 1440 = 24h)
-# MAGIC                                │
-# MAGIC                    ┌──────────┴──────────┐
+# MAGIC                                â”‚
+# MAGIC                    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
 # MAGIC                 APPROVED             REJECTED / TIMEOUT
-# MAGIC                    │                      │
-# MAGIC            passes task            fails task → champion unchanged
+# MAGIC                    â”‚                      â”‚
+# MAGIC            passes task            fails task â†’ champion unchanged
 # MAGIC ```
 # MAGIC
 # MAGIC **FMC reviewer action:**
@@ -4508,12 +4557,14 @@ FILE: src\training\05a_fmc_validation_gate.py
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_name", "")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("fmc_timeout_minutes", "1440")   # 24h default
 dbutils.widgets.text("notification_email", "")
 dbutils.widgets.text("notification_webhook_url", "")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 fmc_timeout_minutes = int(dbutils.widgets.get("fmc_timeout_minutes") or 1440)
 notification_email = dbutils.widgets.get("notification_email")
 notification_webhook_url = dbutils.widgets.get("notification_webhook_url")
@@ -4529,7 +4580,7 @@ POLL_INTERVAL_SECONDS = 300   # check every 5 minutes
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 1 — Retrieve challenger metrics from upstream task values
+# MAGIC ## 1 â€” Retrieve challenger metrics from upstream task values
 
 # COMMAND ----------
 challenger_mape   = float(dbutils.jobs.taskValues.get(
@@ -4547,13 +4598,13 @@ request_id = str(uuid.uuid4())[:8].upper()
 print(f"FMC Review Request ID : {request_id}")
 print(f"Challenger MAPE       : {challenger_mape:.4f}%")
 print(f"Champion MAPE         : {champion_mape:.4f}%")
-print(f"Challenger Balance    : £{challenger_balance:,.0f}")
+print(f"Challenger Balance    : Â£{challenger_balance:,.0f}")
 print(f"Auto-validation passed: {auto_validation_passed}")
 print(f"FMC timeout           : {fmc_timeout_minutes} minutes")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 2 — Write PENDING entry to model_approvals
+# MAGIC ## 2 â€” Write PENDING entry to model_approvals
 
 # COMMAND ----------
 pending_row = pd.DataFrame([{
@@ -4580,7 +4631,7 @@ print(f"Written PENDING FMC review request {request_id} to {cfg.model_approvals}
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 3 — Notify FMC reviewers
+# MAGIC ## 3 â€” Notify FMC reviewers
 
 # COMMAND ----------
 run_url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
@@ -4588,7 +4639,7 @@ run_url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiU
 if notification_webhook_url:
     send_webhook_notification(
         webhook_url=notification_webhook_url,
-        title=f"[{catalog}] FMC Second-Line Validation Required — {request_id}",
+        title=f"[{catalog}] FMC Second-Line Validation Required â€” {request_id}",
         facts={
             "request_id":          request_id,
             "challenger_mape":     f"{challenger_mape:.4f}%",
@@ -4604,7 +4655,7 @@ print(f"FMC notification sent. Reviewer must run fmc_approve.py with request_id=
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 4 — Poll model_approvals for FMC decision
+# MAGIC ## 4 â€” Poll model_approvals for FMC decision
 
 # COMMAND ----------
 deadline = datetime.datetime.utcnow() + datetime.timedelta(minutes=fmc_timeout_minutes)
@@ -4628,16 +4679,16 @@ while datetime.datetime.utcnow() < deadline:
         break
 
     remaining = (deadline - datetime.datetime.utcnow()).seconds // 60
-    print(f"[{datetime.datetime.utcnow().strftime('%H:%M:%S')}] Still PENDING — "
+    print(f"[{datetime.datetime.utcnow().strftime('%H:%M:%S')}] Still PENDING â€” "
           f"{remaining} min remaining. Next check in {POLL_INTERVAL_SECONDS//60} min.")
     time.sleep(POLL_INTERVAL_SECONDS)
 else:
     fmc_decision = "TIMEOUT"
-    print(f"FMC timeout after {fmc_timeout_minutes} minutes — treating as REJECTED.")
+    print(f"FMC timeout after {fmc_timeout_minutes} minutes â€” treating as REJECTED.")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 5 — Set task values and assert decision
+# MAGIC ## 5 â€” Set task values and assert decision
 
 # COMMAND ----------
 fmc_approved = fmc_decision == "APPROVED"
@@ -4652,7 +4703,7 @@ assert fmc_approved, (
     f"FMC second-line validation {fmc_decision} (request_id={request_id}). "
     "Challenger will not be promoted. Re-trigger training job after FMC sign-off."
 )
-print("FMC APPROVED — proceeding to model registration.")
+print("FMC APPROVED â€” proceeding to model registration.")
 
 
 ================================================================================
@@ -4665,30 +4716,32 @@ FILE: src\training\05_model_registration.py
 # MAGIC Implements the full Unity Catalog model lifecycle pattern:
 # MAGIC
 # MAGIC ```
-# MAGIC  train run ──▶ log to MLflow ──▶ register @challenger ──▶ validate MAPE
-# MAGIC                                                               │
-# MAGIC                                            ┌──── Approved ───┘
-# MAGIC                                            │              └── Rejected
-# MAGIC                                            ▼                     ▼
+# MAGIC  train run â”€â”€â–¶ log to MLflow â”€â”€â–¶ register @challenger â”€â”€â–¶ validate MAPE
+# MAGIC                                                               â”‚
+# MAGIC                                            â”Œâ”€â”€â”€â”€ Approved â”€â”€â”€â”˜
+# MAGIC                                            â”‚              â””â”€â”€ Rejected
+# MAGIC                                            â–¼                     â–¼
 # MAGIC                                        @champion           archived tag
 # MAGIC ```
 # MAGIC
 # MAGIC Steps:
 # MAGIC  1. Archive previous @challenger (if rejected last cycle)
 # MAGIC  2. Log SCFCohortModel pyfunc + params/metrics to MLflow
-# MAGIC  3. Register new version → always alias as @challenger
+# MAGIC  3. Register new version â†’ always alias as @challenger
 # MAGIC  4. Set @baseline on first-ever version
 # MAGIC  5. Add rich description + metadata tags to version
-# MAGIC  6. Evaluate: promote @challenger → @champion if MAPE improves > 15%
+# MAGIC  6. Evaluate: promote @challenger â†’ @champion if MAPE improves > 15%
 # MAGIC  7. Tag promoted version + update description accordingly
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("model_name", "")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 
 import sys, pickle
 sys.path.append("../..")
@@ -4697,7 +4750,7 @@ from src.common.pyfunc_model import SCFCohortModel
 from src.common import mlflow_utils
 
 cfg = get_config(catalog, schema)
-VOLUME_PATH = f"/Volumes/{catalog}/{schema}/model_artifacts"
+VOLUME_PATH = f"/Volumes/{catalog}/{model_schema}/model_artifacts"
 
 # COMMAND ----------
 with open(f"{VOLUME_PATH}/latest_training_run.pkl", "rb") as f:
@@ -4711,7 +4764,7 @@ n_products_evaluated = dbutils.jobs.taskValues.get(
 
 # COMMAND ----------
 # Step 1: Archive the previous @challenger if it was rejected last cycle.
-# This implements the "Rejected → Archived" branch in the lifecycle diagram
+# This implements the "Rejected â†’ Archived" branch in the lifecycle diagram
 # before we register the new candidate, so the @challenger alias is free.
 mlflow_utils.archive_rejected_challenger(model_name)
 
@@ -4777,7 +4830,7 @@ with mlflow.start_run(run_name=f"scf_cohort_training_{artifact['cutoff_period']}
 print(f"Logged MLflow run: {run_id}")
 
 # COMMAND ----------
-# Step 3 cont.: Register new version → always alias @challenger.
+# Step 3 cont.: Register new version â†’ always alias @challenger.
 version = mlflow_utils.register_challenger(run_id, "model", model_name)
 print(f"Registered {model_name} v{version} with alias '@challenger'")
 
@@ -4787,14 +4840,22 @@ mlflow_utils.set_baseline_alias(model_name, version)
 
 # COMMAND ----------
 # Step 5: Set description and rich metadata tags on registered model + version.
-# These appear in Unity Catalog Explorer → Catalog > model > version.
+# These appear in Unity Catalog Explorer â†’ Catalog > model > version.
 mlflow_utils.set_registered_model_description(
     model_name=model_name,
     description=(
         "SCF Cohort GLM model for savings balance and cashflow projection. "
-        "Predicts monthly balance, receipts, withdrawals, and transfers per "
-        "cohort x product combination using Generalised Linear Models. "
-        "Used for customer retention strategy and regulatory stress-testing."
+        "The GLMs do not predict balances or flows directly - they predict "
+        "intermediate monthly flow ratios (outflow proportion, "
+        "withdrawal-vs-transfer split, and receipts proportion) as functions of "
+        "cohort age (months_since_start) and rate competitiveness "
+        "(delta_to_best_buy). These fitted ratios are frozen into three lookup "
+        "tables per product - receipts and outflows indexed by cohort age x rate "
+        "bucket, transfers by rate bucket only - and applied recursively "
+        "month-by-month to roll forward each cohort's balance, receipts, "
+        "withdrawals, and transfers. Per-cohort forecasts are then summed to "
+        "product x month. Used for customer retention strategy and regulatory "
+        "stress-testing."
     ),
 )
 
@@ -4819,7 +4880,7 @@ mlflow_utils.set_rich_version_tags(
 print(f"Description and tags set on v{version}")
 
 # COMMAND ----------
-# Step 6: Evaluate - promote @challenger → @champion if MAPE improves > threshold.
+# Step 6: Evaluate - promote @challenger â†’ @champion if MAPE improves > threshold.
 decision = mlflow_utils.evaluate_promotion(
     challenger_metrics={"mape": portfolio_mape},
     model_name=model_name,
@@ -4830,7 +4891,7 @@ decision = mlflow_utils.evaluate_promotion(
 print(decision["reason"])
 
 if decision["promoted"]:
-    # Step 7a: Promote → update tags + description to reflect @champion status
+    # Step 7a: Promote â†’ update tags + description to reflect @champion status
     promoted_version = mlflow_utils.promote_challenger_to_champion(model_name)
     mlflow_utils.set_version_description(
         model_name, promoted_version,
@@ -4851,7 +4912,7 @@ else:
         model_name, str(version), "rejection_reason",
         f"MAPE {portfolio_mape:.2f}% did not improve champion by {cfg.MAPE_PROMOTION_THRESHOLD}%"
     )
-    print(f"Challenger v{version} rejected — champion unchanged.")
+    print(f"Challenger v{version} rejected â€” champion unchanged.")
 
 # COMMAND ----------
 # Freeze the drift baseline at training time. When a new model becomes
@@ -4896,7 +4957,7 @@ dbutils.jobs.taskValues.set(key="promotion_reason",   value=decision["reason"])
 dbutils.jobs.taskValues.set(key="model_name",         value=model_name)
 
 # COMMAND ----------
-# Write model_cards audit table — auto-generated card per registered version.
+# Write model_cards audit table â€” auto-generated card per registered version.
 # Provides a human-readable record: model name, version, run ID, feature list,
 # target labels, portfolio MAPE. Visible in Unity Catalog governance layer.
 import datetime as dt
@@ -5027,11 +5088,13 @@ FILE: src\training\07_deploy_serving_endpoint.py
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_name", "")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("serving_endpoint_name", "scf-cohort-serving-endpoint")
 
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 serving_endpoint_name = dbutils.widgets.get("serving_endpoint_name")
 
 import mlflow
@@ -5117,7 +5180,7 @@ except Exception:
 print(f"Serving endpoint '{serving_endpoint_name}' {action}.")
 print(f"Traffic split: {traffic_map}")
 
-# Write deployment_history audit table — every endpoint create/update recorded.
+# Write deployment_history audit table â€” every endpoint create/update recorded.
 deployment_row = pd.DataFrame([{
     "endpoint_name":      serving_endpoint_name,
     "action":             action,
@@ -5228,10 +5291,12 @@ FILE: src\training\09_auto_rollback_guard.py
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_name", "")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("serving_endpoint_name", "scf-cohort-serving-endpoint")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 serving_endpoint_name = dbutils.widgets.get("serving_endpoint_name")
 
 import sys, datetime
@@ -5266,7 +5331,7 @@ rollback_reason = ""
 reverted_to_version = "N/A"
 
 if rollback_needed:
-    rollback_reason = "Smoke test failed after deployment — reverting endpoint to prior champion."
+    rollback_reason = "Smoke test failed after deployment â€” reverting endpoint to prior champion."
     print(f"ROLLBACK TRIGGERED: {rollback_reason}")
 
     # Find the prior champion: the version tagged stage_history=champion
@@ -5306,17 +5371,17 @@ if rollback_needed:
             )
             print(f"Endpoint reverted to v{reverted_to_version} (prior champion)")
         else:
-            rollback_reason += " No prior champion found — endpoint left as-is."
+            rollback_reason += " No prior champion found â€” endpoint left as-is."
             print("WARNING: no prior champion version found to roll back to.")
 
     except Exception as e:
         rollback_reason += f" Rollback attempt failed: {e}"
         print(f"ERROR during rollback: {e}")
 else:
-    print("Smoke test passed — no rollback needed.")
+    print("Smoke test passed â€” no rollback needed.")
 
 # COMMAND ----------
-# Write rollback_events audit table — every event recorded regardless of outcome.
+# Write rollback_events audit table â€” every event recorded regardless of outcome.
 rollback_row = pd.DataFrame([{
     "endpoint_name":      serving_endpoint_name,
     "model_name":         model_name,
@@ -5352,7 +5417,7 @@ FILE: src\training\fmc_approve.py
 # MAGIC 1. Set `request_id` to the ID from the Teams/email notification
 # MAGIC 2. Set `decision` to `APPROVED` or `REJECTED`
 # MAGIC 3. Set `approver_name` to your name / employee ID
-# MAGIC 4. Run all cells — the training pipeline will detect the decision and proceed
+# MAGIC 4. Run all cells â€” the training pipeline will detect the decision and proceed
 
 # COMMAND ----------
 dbutils.widgets.text("catalog",       "pd_dtl_ds")
@@ -5416,7 +5481,7 @@ spark.createDataFrame(decision_row).write.mode("append").option(
     "mergeSchema", "true"
 ).saveAsTable(cfg.model_approvals)
 
-icon = "✅" if decision == "APPROVED" else "❌"
+icon = "âœ…" if decision == "APPROVED" else "âŒ"
 print(f"{icon} {decision} recorded for request {request_id} by {approver_name}")
 print("The training pipeline will detect this decision within 5 minutes.")
 if comments:
@@ -5441,11 +5506,11 @@ FILE: tests\integration_test.py
 # MAGIC and before prod deployment is approved.
 # MAGIC
 # MAGIC **Test stages:**
-# MAGIC 1. Model training tests    — silver table created, GLMs trained per product
-# MAGIC 2. Model validation tests  — MAPE within threshold, model registered @challenger
-# MAGIC 3. Model deployment tests  — serving endpoint responds, traffic split set
-# MAGIC 4. Model inference tests   — predictions written to inference_predictions table
-# MAGIC 5. Monitoring tests        — monitoring_metrics + drift_results populated
+# MAGIC 1. Model training tests    â€” silver table created, GLMs trained per product
+# MAGIC 2. Model validation tests  â€” MAPE within threshold, model registered @challenger
+# MAGIC 3. Model deployment tests  â€” serving endpoint responds, traffic split set
+# MAGIC 4. Model inference tests   â€” predictions written to inference_predictions table
+# MAGIC 5. Monitoring tests        â€” monitoring_metrics + drift_results populated
 
 # COMMAND ----------
 # This is a Databricks *notebook*, not a local pytest module. It depends on the
@@ -5465,11 +5530,13 @@ except NameError:
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds_pp")
 dbutils.widgets.text("schema",  "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("model_name", "")
 dbutils.widgets.text("serving_endpoint_name", "scf-cohort-serving-endpoint-pp")
 catalog                = dbutils.widgets.get("catalog")
 schema                 = dbutils.widgets.get("schema")
-model_name             = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema           = dbutils.widgets.get("model_schema")
+model_name             = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 serving_endpoint_name  = dbutils.widgets.get("serving_endpoint_name")
 
 import sys, datetime
@@ -5485,13 +5552,13 @@ cfg = get_config(catalog, schema)
 failures = []
 def check(name: str, condition: bool, detail: str = ""):
     status = "PASS" if condition else "FAIL"
-    print(f"  [{status}] {name}" + (f" — {detail}" if detail else ""))
+    print(f"  [{status}] {name}" + (f" â€” {detail}" if detail else ""))
     if not condition:
         failures.append(f"{name}: {detail}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Test Stage 1 — Model Training Tests
+# MAGIC ## Test Stage 1 â€” Model Training Tests
 
 # COMMAND ----------
 print("=== Stage 1: Model Training ===")
@@ -5524,12 +5591,12 @@ except Exception as e:
 
 # 1d. UC Volume has training artifact
 import os
-volume_path = f"/Volumes/{catalog}/{schema}/model_artifacts/latest_training_run.pkl"
+volume_path = f"/Volumes/{catalog}/{model_schema}/model_artifacts/latest_training_run.pkl"
 check("training artifact exists in UC Volume", os.path.exists(volume_path), volume_path)
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Test Stage 2 — Model Validation Tests
+# MAGIC ## Test Stage 2 â€” Model Validation Tests
 
 # COMMAND ----------
 print("\n=== Stage 2: Model Validation ===")
@@ -5565,7 +5632,7 @@ except Exception as e:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Test Stage 3 — Model Deployment Tests
+# MAGIC ## Test Stage 3 â€” Model Deployment Tests
 
 # COMMAND ----------
 print("\n=== Stage 3: Model Deployment ===")
@@ -5602,7 +5669,7 @@ except Exception as e:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Test Stage 4 — Model Inference Tests
+# MAGIC ## Test Stage 4 â€” Model Inference Tests
 
 # COMMAND ----------
 print("\n=== Stage 4: Model Inference ===")
@@ -5620,7 +5687,7 @@ try:
 except Exception as e:
     check("inference_predictions accessible", False, str(e))
 
-# 4b. Load model and run a predict on one row — real end-to-end test
+# 4b. Load model and run a predict on one row â€” real end-to-end test
 try:
     model_uri = f"models:/{model_name}@champion"
     try:
@@ -5645,7 +5712,7 @@ except Exception as e:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Test Stage 5 — Monitoring Tests
+# MAGIC ## Test Stage 5 â€” Monitoring Tests
 
 # COMMAND ----------
 print("\n=== Stage 5: Monitoring ===")
@@ -5686,19 +5753,19 @@ print(f"{'='*60}")
 if failures:
     print(f"\nFAILED ({len(failures)} failure(s)):")
     for f in failures:
-        print(f"  ✗  {f}")
+        print(f"  âœ—  {f}")
     print()
     raise AssertionError(
         f"{len(failures)} integration test(s) failed. "
         "Fix failures before promoting to prod. See output above."
     )
 else:
-    print("\nAll 5 test stages PASSED — safe to promote to prod.")
-    print("  Stage 1: Model training    ✓")
-    print("  Stage 2: Model validation  ✓")
-    print("  Stage 3: Model deployment  ✓")
-    print("  Stage 4: Model inference   ✓")
-    print("  Stage 5: Monitoring        ✓")
+    print("\nAll 5 test stages PASSED â€” safe to promote to prod.")
+    print("  Stage 1: Model training    âœ“")
+    print("  Stage 2: Model validation  âœ“")
+    print("  Stage 3: Model deployment  âœ“")
+    print("  Stage 4: Model inference   âœ“")
+    print("  Stage 5: Monitoring        âœ“")
 
 dbutils.jobs.taskValues.set(key="integration_tests_passed", value=bool(not failures))
 dbutils.jobs.taskValues.set(key="n_failures", value=len(failures))
@@ -5708,7 +5775,7 @@ FILE: tests\test_config.py
 ================================================================================
 """
 tests/test_config.py
-Tests for src/common/config.py — verifies all UC table paths are correctly formed.
+Tests for src/common/config.py â€” verifies all UC table paths are correctly formed.
 """
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -5754,7 +5821,7 @@ FILE: tests\test_drift_checks.py
 ================================================================================
 """
 tests/test_drift_checks.py
-Tests for src/common/drift_checks.py — run with: pytest tests/ (no cluster needed)
+Tests for src/common/drift_checks.py â€” run with: pytest tests/ (no cluster needed)
 """
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -5769,7 +5836,7 @@ def test_psi_identical_distributions_is_zero():
     rng = np.random.default_rng(42)
     s = pd.Series(rng.normal(0, 1, 1000))
     psi = _psi_for_series(s, s)
-    assert psi < 0.01  # identical → near-zero PSI
+    assert psi < 0.01  # identical â†’ near-zero PSI
 
 
 def test_psi_very_different_distributions_is_high():
@@ -5777,7 +5844,7 @@ def test_psi_very_different_distributions_is_high():
     ref = pd.Series(rng.normal(0, 1, 1000))
     cur = pd.Series(rng.normal(5, 1, 1000))  # completely shifted
     psi = _psi_for_series(ref, cur)
-    assert psi > 0.25  # large shift → ALERT-level PSI
+    assert psi > 0.25  # large shift â†’ ALERT-level PSI
 
 
 def test_psi_empty_series_returns_nan():
@@ -5816,7 +5883,7 @@ def test_any_alerts_false_when_no_alert():
 def test_psi_constant_series_returns_zero():
     s = pd.Series([1.0] * 100)
     psi = _psi_for_series(s, s)
-    assert psi == 0.0  # not enough variance → returns 0
+    assert psi == 0.0  # not enough variance â†’ returns 0
 
 
 ================================================================================
@@ -5900,7 +5967,7 @@ FILE: tests\test_quality_checks.py
 ================================================================================
 """
 tests/test_quality_checks.py
-Tests for src/common/quality_checks.py — run with: pytest tests/ (no cluster needed)
+Tests for src/common/quality_checks.py â€” run with: pytest tests/ (no cluster needed)
 """
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -6053,4 +6120,6 @@ def test_retraining_trigger_none():
     )
     assert recommend is False
     assert reason == "No retraining trigger crossed"
+
+
 

@@ -127,6 +127,20 @@ agg_df = agg_df[~(agg_df['increasing_size'] == True)]  # noqa: E712
 agg_df.loc[agg_df['outflow_prop'] > 1, 'outflow_prop'] = 1
 
 # COMMAND ----------
+# Range checks on the GLM flow ratios (model-owner requirement): along with
+# outflow_prop above, rec_prop must be >= 0 (Gamma/Tweedie log-link) and
+# withdrawal_prop_of_outflow must lie in [0, 1] (Binomial). Report how many
+# rows fall outside range, then clamp so a single dirty cohort can't break
+# the GLM fit downstream.
+_rec_bad = int((agg_df['rec_prop'] < 0).sum())
+_wpo_bad = int(((agg_df['withdrawal_prop_of_outflow'] < 0) |
+                (agg_df['withdrawal_prop_of_outflow'] > 1)).sum())
+print(f"rec_prop < 0                : {_rec_bad} rows (clamped to 0)")
+print(f"withdrawal_prop_of_outflow  : {_wpo_bad} rows outside [0,1] (clamped)")
+agg_df['rec_prop'] = agg_df['rec_prop'].clip(lower=0)
+agg_df['withdrawal_prop_of_outflow'] = agg_df['withdrawal_prop_of_outflow'].clip(0, 1)
+
+# COMMAND ----------
 agg_df.loc[agg_df['withdrawal_prop_of_outflow'].isnull(), 'withdrawal_prop_of_outflow'] = 0
 
 # Delta-to-best-buy: how far a cohort's rate sits from the market best-buy rate,

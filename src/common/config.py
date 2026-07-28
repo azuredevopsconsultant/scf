@@ -24,11 +24,6 @@ class Config:
         """Existing 3 cohort features (int_rate, best_buy, delta_to_best_buy etc.)"""
         return f"{self.catalog}.{self.feature_schema}.feature_store_cohort"
 
-    # NOTE: sales_features and feature_store_enriched are defined further down
-    # against the main {schema} (not {feature_schema}). Those definitions win at
-    # runtime, so the effective location for both is the main schema - kept
-    # there to match the tables already created by the pipeline.
-
     # ---- Bronze / source tables (replace the original s3:// parquet reads) --
     @property
     def raw_base_data(self) -> str:
@@ -47,19 +42,24 @@ class Config:
     def silver_agg_cohort(self) -> str:
         return f"{self.catalog}.{self.schema}.silver_agg_cohort"
 
+    # ---- GLM flow-ratio lookup tables (built by 00_feature_engineering.py) ---
+    # Receipts & outflows are indexed by cohort age × rate bucket; transfers
+    # only by rate bucket (transfer share depends on delta_to_best_buy alone).
+    @property
+    def receipts_lookup(self) -> str:
+        return f"{self.catalog}.{self.feature_schema}.receipts_ratio_lookup"
+
+    @property
+    def outflows_lookup(self) -> str:
+        return f"{self.catalog}.{self.feature_schema}.outflows_ratio_lookup"
+
+    @property
+    def transfers_lookup(self) -> str:
+        return f"{self.catalog}.{self.feature_schema}.transfers_ratio_lookup"
+
     @property
     def feature_store_table(self) -> str:
-        return f"{self.catalog}.{self.schema}.feature_store_cohort"
-
-    @property
-    def feature_store_enriched(self) -> str:
-        """Feature store enriched with Redshift sales aggregate features."""
-        return f"{self.catalog}.{self.schema}.feature_store_enriched"
-
-    @property
-    def sales_features(self) -> str:
-        """Raw Redshift sales aggregate features before joining to cohort features."""
-        return f"{self.catalog}.{self.schema}.sales_features"
+        return f"{self.catalog}.{self.feature_schema}.feature_store_cohort"
 
     # ---- Training artifacts ---------------------------------------------------
     @property
@@ -104,6 +104,11 @@ class Config:
     @property
     def inference_predictions(self) -> str:
         return f"{self.catalog}.{self.schema}.inference_predictions"
+
+    @property
+    def inference_predictions_product_month(self) -> str:
+        """Per-cohort forecasts summed up to product x reporting_period."""
+        return f"{self.catalog}.{self.schema}.inference_predictions_product_month"
 
     @property
     def inference_features(self) -> str:

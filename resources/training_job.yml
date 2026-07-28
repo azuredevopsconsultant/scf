@@ -51,6 +51,8 @@ resources:
           default: ${var.schema}
         - name: model_name
           default: ${var.model_name}
+        - name: model_schema
+          default: ${var.model_schema}
         - name: cutoff_period
           default: "2025-01"
         - name: environment
@@ -64,20 +66,8 @@ resources:
           #   base_query_df_apr_2026.parquet, moneyfacts_merge.parquet,
           #   QRM_products_revised.csv
           default: /Volumes/preprod_catalog/ml_workspace/data_scientists/SCF
-        - name: redshift_host
-          default: ""
-        - name: redshift_port
-          default: "5439"
-        - name: redshift_db
-          default: ""
-        - name: redshift_schema
-          default: "sales"
-        - name: redshift_table
-          default: "transactions"
-        - name: join_key
-          default: "account_id"
-        - name: as_of_date
-          default: ""
+        - name: feature_schema
+          default: feature_store
 
       environments:
         - environment_key: default
@@ -91,31 +81,8 @@ resources:
               - "-r ${workspace.file_path}/requirements.txt"
 
       tasks:
-        # ingestion so enriched features are available for model training.
-        # Skip by leaving redshift_host blank (task fails fast if host empty).
-        - task_key: feature_engineering_redshift
-          environment_key: default
-          max_retries: 1
-          min_retry_interval_millis: 300000
-          retry_on_timeout: true
-          notebook_task:
-            notebook_path: ../src/training/00_feature_engineering_redshift.py
-            base_parameters:
-              catalog: "{{job.parameters.catalog}}"
-              schema:  "{{job.parameters.schema}}"
-              redshift_host:   "{{job.parameters.redshift_host}}"
-              redshift_port:   "{{job.parameters.redshift_port}}"
-              redshift_db:     "{{job.parameters.redshift_db}}"
-              redshift_schema: "{{job.parameters.redshift_schema}}"
-              redshift_table:  "{{job.parameters.redshift_table}}"
-              join_key:        "{{job.parameters.join_key}}"
-              as_of_date:      "{{job.parameters.as_of_date}}"
-              secret_scope:    ${var.secret_scope}
-          timeout_seconds: 3600
-
+        # First task: land the raw source files from the UC Volume.
         - task_key: data_ingestion
-          depends_on:
-            - task_key: feature_engineering_redshift
           environment_key: default
           max_retries: 2
           min_retry_interval_millis: 300000
@@ -142,9 +109,27 @@ resources:
               schema: "{{job.parameters.schema}}"
           timeout_seconds: 3600
 
-        - task_key: data_validation
+        # Feature engineering: validate GLM flow-ratio ranges and build the
+        # 3 lookup tables (receipts/outflows by cohort age × rate bucket;
+        # transfers by rate bucket only) from the cohort matrix.
+        - task_key: feature_engineering
           depends_on:
             - task_key: data_preprocessing
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          retry_on_timeout: true
+          notebook_task:
+            notebook_path: ../src/training/00_feature_engineering.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              feature_schema: "{{job.parameters.feature_schema}}"
+          timeout_seconds: 1800
+
+        - task_key: data_validation
+          depends_on:
+            - task_key: feature_engineering
           environment_key: default
           max_retries: 1
           min_retry_interval_millis: 300000
@@ -168,6 +153,7 @@ resources:
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
+              model_schema: "{{job.parameters.model_schema}}"
               cutoff_period: "{{job.parameters.cutoff_period}}"
           timeout_seconds: 10800
 
@@ -183,6 +169,7 @@ resources:
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
+              model_schema: "{{job.parameters.model_schema}}"
           timeout_seconds: 3600
 
         # Model Validation Job — checks description, MAPE gate, business
@@ -200,6 +187,7 @@ resources:
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
+              model_schema: "{{job.parameters.model_schema}}"
               model_name: "{{job.parameters.model_name}}"
           timeout_seconds: 3600
 
@@ -252,6 +240,7 @@ resources:
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
+              model_schema: "{{job.parameters.model_schema}}"
               model_name: "{{job.parameters.model_name}}"
           timeout_seconds: 1800
           # Task-level alert in addition to the job-level one: this is the

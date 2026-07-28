@@ -9,8 +9,10 @@ variables:
     default: pd_dtl_ds
   schema:
     default: savings_cashflow
+  model_schema:
+    default: ml_models
   model_name:
-    default: ${var.catalog}.${var.schema}.scf_cohort_model
+    default: ${var.catalog}.${var.model_schema}.scf_cohort_model
   notification_email:
     default: capukvelu@gmail.com
   notification_webhook_url:
@@ -51,7 +53,11 @@ targets:
       service_principal_name: 768cb535-d83e-4628-9ece-96f44c177f2f
     variables:
       environment: preprod
-      catalog: pd_dtl_ds_pp
+      catalog: preprod_catalog
+      # Dedicated output schema for pipeline tables, feature tables and model
+      # artifacts. Source files are read from the ml_workspace volume via
+      # volume_path; nothing is written back into that sandbox schema.
+      schema: savings_cashflow
       notification_email: capukvelu@gmail.com
       notification_webhook_url: ""
       serving_endpoint_name: scf-cohort-serving-endpoint-pp

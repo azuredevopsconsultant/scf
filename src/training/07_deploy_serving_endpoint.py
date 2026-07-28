@@ -9,11 +9,13 @@
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_name", "")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("serving_endpoint_name", "scf-cohort-serving-endpoint")
 
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 serving_endpoint_name = dbutils.widgets.get("serving_endpoint_name")
 
 import mlflow

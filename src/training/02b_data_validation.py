@@ -55,9 +55,11 @@ results.append(check_row_count(silver_df, MIN_ROWS))
 # Null rates on model features
 results.extend(check_null_rates(silver_df, FEATURE_COLUMNS, MAX_NULL_RATE))
 
-# Proportion ranges: outflow_prop and rec_prop must be in [0, 1] after capping
+# Proportion ranges: outflow_prop and withdrawal_prop_of_outflow are true
+# proportions in [0, 1]; rec_prop can exceed balance so it uses a wider ceiling.
 results.append(check_value_range(silver_df, "outflow_prop", 0.0, 1.0))
 results.append(check_value_range(silver_df, "rec_prop", 0.0, 5.0))  # receipts can exceed balance
+results.append(check_value_range(silver_df, "withdrawal_prop_of_outflow", 0.0, 1.0))
 
 # Product coverage: need at least 5 products to train a meaningful portfolio
 pdf = silver_df.select("product").distinct().toPandas()

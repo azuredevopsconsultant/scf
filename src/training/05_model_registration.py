@@ -25,10 +25,12 @@
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("model_name", "")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 
 import sys, pickle
 sys.path.append("../..")
@@ -37,7 +39,7 @@ from src.common.pyfunc_model import SCFCohortModel
 from src.common import mlflow_utils
 
 cfg = get_config(catalog, schema)
-VOLUME_PATH = f"/Volumes/{catalog}/{schema}/model_artifacts"
+VOLUME_PATH = f"/Volumes/{catalog}/{model_schema}/model_artifacts"
 
 # COMMAND ----------
 with open(f"{VOLUME_PATH}/latest_training_run.pkl", "rb") as f:
@@ -132,9 +134,17 @@ mlflow_utils.set_registered_model_description(
     model_name=model_name,
     description=(
         "SCF Cohort GLM model for savings balance and cashflow projection. "
-        "Predicts monthly balance, receipts, withdrawals, and transfers per "
-        "cohort x product combination using Generalised Linear Models. "
-        "Used for customer retention strategy and regulatory stress-testing."
+        "The GLMs do not predict balances or flows directly - they predict "
+        "intermediate monthly flow ratios (outflow proportion, "
+        "withdrawal-vs-transfer split, and receipts proportion) as functions of "
+        "cohort age (months_since_start) and rate competitiveness "
+        "(delta_to_best_buy). These fitted ratios are frozen into three lookup "
+        "tables per product - receipts and outflows indexed by cohort age x rate "
+        "bucket, transfers by rate bucket only - and applied recursively "
+        "month-by-month to roll forward each cohort's balance, receipts, "
+        "withdrawals, and transfers. Per-cohort forecasts are then summed to "
+        "product x month. Used for customer retention strategy and regulatory "
+        "stress-testing."
     ),
 )
 

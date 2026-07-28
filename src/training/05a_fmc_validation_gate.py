@@ -29,12 +29,14 @@
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_name", "")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("fmc_timeout_minutes", "1440")   # 24h default
 dbutils.widgets.text("notification_email", "")
 dbutils.widgets.text("notification_webhook_url", "")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 fmc_timeout_minutes = int(dbutils.widgets.get("fmc_timeout_minutes") or 1440)
 notification_email = dbutils.widgets.get("notification_email")
 notification_webhook_url = dbutils.widgets.get("notification_webhook_url")

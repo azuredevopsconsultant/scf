@@ -1,4 +1,4 @@
-fixtures\generate_fixtures.py
+﻿fixtures\generate_fixtures.py
 src\__init__.py
 src\common\config.py
 src\common\dataset_versioning.py
@@ -24,7 +24,7 @@ src\inference\06_data_quality.py
 src\inference\07_confirmation_mail.py
 src\inference\08_retraining_trigger.py
 src\inference\__init__.py
-src\training\00_feature_engineering_redshift.py
+src\training\00_feature_engineering.py
 src\training\01_data_ingestion.py
 src\training\02b_data_validation.py
 src\training\02_data_preprocessing.py
