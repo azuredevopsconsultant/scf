@@ -1,0 +1,48 @@
+# 20 - Deploy Preprod + Run Training Pipeline (feature engineering)
+#
+# READY-TO-COPY reference for the office repo
+# (do-mlops-savings-databricks-pipeline). Copy this over your existing
+# .github/workflows/20-deploy-preprod.yml, OR just add the final
+# "Run Training Pipeline" step into your current preprod workflow.
+#
+# IMPORTANT: keep whatever AUTH your existing workflow already uses.
+#   - If it uses PAT secrets, the env: blocks below are correct (adjust
+#     the secret names to match yours).
+#   - If it uses OIDC / azure-login + service principal, keep that mechanism
+#     and just add the "Run Training Pipeline" step after the deploy step.
+
+name: 20 - Deploy Preprod
+
+on:
+  push:
+    branches: [main]      # run from main
+  workflow_dispatch:      # or trigger manually
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-and-run-preprod:
+    name: Deploy + Run Training Pipeline (Preprod)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Deploy to Preprod
+        run: databricks bundle deploy -t preprod
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PREPROD }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_PREPROD }}
+
+      # This runs the full training pipeline on preprod:
+      #   data_ingestion -> data_preprocessing -> feature_engineering ->
+      #   data_validation -> model_training -> ... -> model_registration
+      - name: Run Training Pipeline (feature engineering) on Preprod
+        run: databricks bundle run scf_training_pipeline -t preprod
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PREPROD }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_PREPROD }}

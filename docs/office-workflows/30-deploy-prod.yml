@@ -1,0 +1,32 @@
+# 30 - Deploy Prod (MANUAL ONLY)
+#
+# READY-TO-COPY reference for the office repo. Copy this over your existing
+# .github/workflows/30-deploy-prod.yml so a push to `main` does NOT
+# auto-deploy prod — prod is triggered manually from the Actions tab.
+#
+# Keep whatever AUTH your existing workflow already uses (PAT vs OIDC).
+
+name: 30 - Deploy Prod
+
+on:
+  workflow_dispatch:      # manual only — no push trigger
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-prod:
+    name: Deploy to Prod (manual)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Deploy to Prod
+        run: databricks bundle deploy -t prod
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PROD }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_PROD }}
