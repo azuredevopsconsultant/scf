@@ -10,8 +10,10 @@
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
+model_schema = dbutils.widgets.get("model_schema")
 
 import sys, pickle, datetime
 sys.path.append("../..")
@@ -21,7 +23,7 @@ import pandas as pd
 import numpy as np
 
 cfg = get_config(catalog, schema)
-VOLUME_PATH = f"/Volumes/{catalog}/{schema}/model_artifacts"
+VOLUME_PATH = f"/Volumes/{catalog}/{model_schema}/model_artifacts"
 
 # COMMAND ----------
 with open(f"{VOLUME_PATH}/latest_training_run.pkl", "rb") as f:

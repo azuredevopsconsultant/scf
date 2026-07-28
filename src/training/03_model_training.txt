@@ -16,9 +16,11 @@
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds")
 dbutils.widgets.text("schema", "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("cutoff_period", "2025-01")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
+model_schema = dbutils.widgets.get("model_schema")
 cutoff_period = dbutils.widgets.get("cutoff_period")
 
 import sys, pickle, datetime, mlflow
@@ -202,8 +204,9 @@ print(f"Products beating naive baseline: {products_beating_baseline}/{len(all_re
 # can pick up the exact same fitted objects without retraining. UC Volumes
 # are addressable as normal filesystem paths on UC-enabled clusters - no
 # dbfs:/ prefix or dbutils.fs needed for plain Python file I/O.
-VOLUME_PATH = f"/Volumes/{catalog}/{schema}/model_artifacts"
-spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.{schema}.model_artifacts")
+VOLUME_PATH = f"/Volumes/{catalog}/{model_schema}/model_artifacts"
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{model_schema}")
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.{model_schema}.model_artifacts")
 
 artifact = {
     "results": all_results,
