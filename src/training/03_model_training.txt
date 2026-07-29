@@ -159,6 +159,27 @@ with mlflow.start_run(run_name=f"hpo_training_{cutoff_period}") as parent_run:
                     val_mape = metrics.get("mape_balance", float("inf"))
                     mlflow.log_metric("val_mape",  val_mape)
                     mlflow.log_metric("val_rmse",  metrics.get("rmse_balance", float("inf")))
+
+                    # GLM-native goodness-of-fit for each of the three sub-models
+                    # (deviance / AIC / pseudo-R2). These judge the ratio models
+                    # themselves, complementing the reconstructed-balance MAPE.
+                    for res_key, tag in (
+                        ("rec_results", "rec"),
+                        ("outflow_results", "outflow"),
+                        ("wd_results", "wd"),
+                    ):
+                        gres = result.get(res_key)
+                        if gres is None:
+                            continue
+                        try:
+                            mlflow.log_metric(f"{tag}_deviance", float(gres.deviance))
+                            mlflow.log_metric(f"{tag}_aic", float(gres.aic))
+                            if getattr(gres, "null_deviance", None):
+                                pseudo_r2 = 1.0 - float(gres.deviance) / float(gres.null_deviance)
+                                mlflow.log_metric(f"{tag}_pseudo_r2", pseudo_r2)
+                        except Exception:
+                            pass
+
                     print(f"  {params}  cv={cv_mape:.3f}  val={val_mape:.3f}")
                     if val_mape < best_mape:
                         best_mape   = val_mape

@@ -244,6 +244,12 @@ class BuildProjections:
 class Evaluator:
     def mape(self, df, actual_col, pred_col):
         data = df[[actual_col, pred_col]].dropna()
+        # Guard the zero denominator: |actual| == 0 would make APE inf and
+        # poison the mean (a real risk for withdrawals/transfers that can be 0
+        # in a month). Drop those rows; return NaN if nothing scoreable remains.
+        data = data[data[actual_col] != 0]
+        if data.empty:
+            return float("nan")
         return (data[actual_col] - data[pred_col]).abs().div(data[actual_col].abs()).mean() * 100
 
     def rmse(self, df, actual_col, pred_col):
