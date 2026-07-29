@@ -256,3 +256,64 @@ monitor drift/quality/MAPE → recommend retrain → repeat.**
 | `RETRAIN_NULL_RATE_THRESHOLD` | 0.10 | Retraining trigger |
 | `RETRAIN_MAPE_THRESHOLD` | 20.0% | Retraining trigger |
 | `EXTRAPOLATION_ALERT_RATE` | 0.05 | GLM extrapolation guard |
+
+---
+
+## 10. MLOps components coverage (Databricks)
+
+Standard MLOps components and how this project implements them on Databricks.
+**7 of 8 covered**; the only gap is Delta Live Tables (classic Delta + Jobs is
+used instead — a valid choice).
+
+| MLOps component | Databricks capability | Status | Evidence |
+|---|---|---|---|
+| Experiment Tracking | Managed MLflow | ✅ | `mlflow.set_experiment`, nested HPO runs (`03_model_training.py`); inference run logging (`03_inference.py`) |
+| Workflow Orchestration | Workflows (Jobs) | ✅ | DAB jobs, task DAG, `depends_on`, schedules, condition gates (`resources/*.yml`) |
+| Data & Pipeline Versioning | Delta Lake **+ DLT** | ⚠️ Partial | Delta ✅ (`dataset_versions`, `training_feature_snapshots`, `VERSION AS OF`, git+DAB). **DLT ❌** — plain Delta writes inside Jobs tasks |
+| Feature Store | Databricks Feature Store | ✅ | `FeatureEngineeringClient` → `feature_store_cohort` + 3 lookups (`00_feature_engineering.py`, `02_data_preprocessing.py`) |
+| Model Testing | MLflow Model Verification | ✅ | Data gate (`02b_data_validation.py`), challenger gate (`04b_model_validation.py`), smoke test (`08_smoke_test_serving_endpoint.py`), unit tests (`tests/`) |
+| Model Serving | Mosaic AI Model Serving | ✅ | `07_deploy_serving_endpoint.py` + rollback guard (`09_auto_rollback_guard.py`) |
+| Model Monitoring & Observability | MLflow Metrics + UC Audit | ✅ | `04_model_monitoring.py`, `05_data_drift.py`, `06_data_quality.py`, `setup_lakehouse_monitoring.py`, audit tables |
+| Infrastructure Management | Serverless + autoscaling | ✅ | `environment_version: "2"` (serverless) across job ymls; IaC via `databricks.yml` (DAB) |
+
+**Gap — Delta Live Tables:** no `import dlt` / `@dlt.table` / `pipelines:` and no
+Auto Loader (`cloudFiles`). Ingestion → preprocessing → feature engineering runs
+as classic Delta writes inside Jobs tasks. To cover DLT, convert the
+`01`/`02`/`00` path into a DLT pipeline with `@dlt.table` + Auto Loader on the
+source Volume.
+
+---
+
+## 11. Training pipeline — step by step (task order + outputs)
+
+Execution order from `resources/training_job.yml`, with what each task produces.
+
+| # | Task | Notebook | Output |
+|---|---|---|---|
+| 1 | `data_ingestion` | `01_data_ingestion.py` | Bronze tables `raw_base_data`, `raw_moneyfacts_best_buy`, `raw_qrm_products` (asserts > 0 rows) |
+| 2 | `data_preprocessing` | `02_data_preprocessing.py` | `silver_agg_cohort` (cohort matrix + flow ratios + `dbb_range`), `feature_store_cohort`, `training_feature_snapshots`, `dataset_versions` |
+| 3 | `feature_engineering` | `00_feature_engineering.py` | 3 lookup tables: `receipts_ratio_lookup`, `outflows_ratio_lookup`, `transfers_ratio_lookup` (+ ratio range checks) |
+| 4 | `data_validation` | `02b_data_validation.py` | Pass/fail gate (row count ≥ 500, null ≤ 5%, ranges, schema) — fails run if bad |
+| 5 | `model_training` | `03_model_training.py` | GLM artifact `…/ml_models/model_artifacts/latest_training_run.pkl`; MLflow HPO parent + nested child runs; best params per product |
+| 6 | `model_evaluation` | `04_model_evaluation.py` | `model_eval_metrics` (per-product MAPE/RMSE, beats-baseline); `portfolio_mape` task value |
+| 7 | `model_validation` | `04b_model_validation.py` | `validation_passed` task value; `challenger_mape`/`champion_mape`; validation plots |
+| 8 | `check_validation_gate` | (condition) | Proceeds only if `validation_passed == true` |
+| 9 | `fmc_validation_gate` | `05a_fmc_validation_gate.py` | Writes PENDING to `model_approvals`; waits for human APPROVED/REJECTED (≤ 24h) |
+| 10 | `model_registration` | `05_model_registration.py` | New version aliased `@challenger`; promoted to `@champion` if MAPE beats champion by ≥ 15%; `model_cards` |
+| 11 | `deploy_serving_endpoint` | `07_deploy_serving_endpoint.py` | Serving endpoint updated to champion; `deployment_history` |
+| 12 | `smoke_test_serving_endpoint` | `08_smoke_test_serving_endpoint.py` | Smoke-test pass/fail against the live endpoint |
+| 13 | `auto_rollback_guard` (ALL_DONE) | `09_auto_rollback_guard.py` | Reverts endpoint if smoke failed; `rollback_events` (always written) |
+| 14 | `confirmation_mail` (ALL_DONE) | `06_confirmation_mail.py` | Email/webhook run summary |
+
+```
+data_ingestion → data_preprocessing → feature_engineering → data_validation
+  → model_training → model_evaluation → model_validation → check_validation_gate
+    → fmc_validation_gate → model_registration → deploy_serving_endpoint
+      → smoke_test_serving_endpoint → auto_rollback_guard → confirmation_mail
+```
+
+**Net result of one successful run:** raw → silver → feature tables refreshed, a
+new GLM registered (challenger, possibly promoted to champion), the serving
+endpoint updated and smoke-tested, full audit rows written (`model_cards`,
+`deployment_history`, `rollback_events`, `model_approvals`), and a confirmation
+email sent.
