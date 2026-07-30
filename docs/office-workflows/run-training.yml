@@ -1,0 +1,56 @@
+# Run Training Pipeline (ON-DEMAND, manual)
+#
+# READY-TO-COPY reference for the office repo. Save as
+# .github/workflows/run-training.yml.
+#
+# Databricks best practice: keep job EXECUTION separate from deploy. This
+# workflow is triggered MANUALLY (workflow_dispatch) so a human deliberately
+# runs the already-deployed training job on a chosen environment. Regular
+# retraining should still come from the job's SCHEDULE inside Databricks;
+# this is for ad-hoc runs (e.g. after a drift alert).
+#
+# Job key must match resources.jobs.<key> in training_job.yml
+# (office repo key: scf_cohort_training_job).
+
+name: Run Training Pipeline (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Bundle target to run against"
+        type: choice
+        options:
+          - experimental
+          - dev
+          - preprod
+          - prod
+        default: preprod
+
+permissions:
+  id-token: write        # GitHub OIDC login
+  contents: read
+
+jobs:
+  run-training:
+    name: Run Training Job (${{ inputs.target }})
+    runs-on: ubuntu-latest
+    # Optional: attach a GitHub Environment for required-reviewer approval,
+    # especially for prod runs.
+    environment: ${{ inputs.target }}
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      GODEBUG: "x509negativeserial=1"
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Setup Databricks CLI Tooling
+        uses: databricks/setup-cli@v1
+
+      # `bundle run` waits for the Databricks job to finish and returns a
+      # non-zero exit code on failure, so this workflow reflects the real
+      # pipeline outcome.
+      - name: Run Training Job
+        run: databricks bundle run scf_cohort_training_job -t ${{ inputs.target }}
