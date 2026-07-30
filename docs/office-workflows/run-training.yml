@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Databricks CLI Tooling
-        uses: databricks/setup-cli@v1
+        uses: databricks/setup-cli@main
 
       # `bundle run` waits for the Databricks job to finish and returns a
       # non-zero exit code on failure, so this workflow reflects the real

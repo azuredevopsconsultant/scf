@@ -36,7 +36,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Databricks CLI Tooling
-        uses: databricks/setup-cli@v1
+        uses: databricks/setup-cli@main
 
       - name: Validate Bundle
         run: databricks bundle validate -t preprod
