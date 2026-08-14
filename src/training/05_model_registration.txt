@@ -23,7 +23,7 @@
 # MAGIC  7. Tag promoted version + update description accordingly
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("model_name", "")

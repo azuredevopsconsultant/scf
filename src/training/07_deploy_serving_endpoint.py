@@ -6,7 +6,7 @@
 # MAGIC Traffic weights are logged as task values for the smoke test to verify.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_name", "")
 dbutils.widgets.text("model_schema", "ml_models")

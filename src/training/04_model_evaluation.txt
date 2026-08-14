@@ -8,7 +8,7 @@
 # MAGIC Portfolio-level metrics passed forward via task values.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_schema", "ml_models")
 catalog = dbutils.widgets.get("catalog")

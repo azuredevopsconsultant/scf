@@ -4,9 +4,9 @@
 # MAGIC Sends one record to the serving endpoint and asserts a non-empty response.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
-dbutils.widgets.text("serving_endpoint_name", "scf-cohort-serving-endpoint")
+dbutils.widgets.text("serving_endpoint_name", "scf-cohort-serving-endpoint-dev")
 
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")

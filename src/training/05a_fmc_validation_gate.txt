@@ -26,10 +26,12 @@
 # MAGIC Run `src/training/fmc_approve.py` with `decision=APPROVED` or `REJECTED`.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_name", "")
 dbutils.widgets.text("model_schema", "ml_models")
+dbutils.widgets.text("environment", "dev")
+dbutils.widgets.text("fmc_approval_required", "true")
 dbutils.widgets.text("fmc_timeout_minutes", "1440")   # 24h default
 dbutils.widgets.text("notification_email", "")
 dbutils.widgets.text("notification_webhook_url", "")
@@ -37,6 +39,8 @@ catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
 model_schema = dbutils.widgets.get("model_schema")
 model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
+environment = dbutils.widgets.get("environment")
+fmc_approval_required = dbutils.widgets.get("fmc_approval_required").strip().lower() == "true"
 fmc_timeout_minutes = int(dbutils.widgets.get("fmc_timeout_minutes") or 1440)
 notification_email = dbutils.widgets.get("notification_email")
 notification_webhook_url = dbutils.widgets.get("notification_webhook_url")
@@ -72,6 +76,7 @@ print(f"Challenger MAPE       : {challenger_mape:.4f}%")
 print(f"Champion MAPE         : {champion_mape:.4f}%")
 print(f"Challenger Balance    : £{challenger_balance:,.0f}")
 print(f"Auto-validation passed: {auto_validation_passed}")
+print(f"FMC approval required : {fmc_approval_required}")
 print(f"FMC timeout           : {fmc_timeout_minutes} minutes")
 
 # COMMAND ----------
@@ -84,8 +89,8 @@ pending_row = pd.DataFrame([{
     "model_name":          model_name,
     "model_version":       "pending_registration",
     "validation_passed":   str(auto_validation_passed),
-    "approver":            "PENDING_FMC_REVIEW",
-    "approval_status":     "PENDING",
+    "approver":            "PENDING_FMC_REVIEW" if fmc_approval_required else "DEV_AUTO_APPROVAL",
+    "approval_status":     "PENDING" if fmc_approval_required else "APPROVED",
     "approval_timestamp":  datetime.datetime.utcnow().isoformat(),
     "challenger_mape":     f"{challenger_mape:.4f}",
     "champion_mape":       f"{champion_mape:.4f}" if champion_mape > 0 else "N/A",
@@ -99,7 +104,7 @@ spark.createDataFrame(pending_row).write.mode("append").option(
     "mergeSchema", "true"
 ).saveAsTable(cfg.model_approvals)
 
-print(f"Written PENDING FMC review request {request_id} to {cfg.model_approvals}")
+print(f"Written approval request {request_id} to {cfg.model_approvals}")
 
 # COMMAND ----------
 # MAGIC %md
@@ -108,7 +113,7 @@ print(f"Written PENDING FMC review request {request_id} to {cfg.model_approvals}
 # COMMAND ----------
 run_url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
 
-if notification_webhook_url:
+if fmc_approval_required and notification_webhook_url:
     send_webhook_notification(
         webhook_url=notification_webhook_url,
         title=f"[{catalog}] FMC Second-Line Validation Required — {request_id}",
@@ -123,7 +128,10 @@ if notification_webhook_url:
         run_url=run_url,
     )
 
-print(f"FMC notification sent. Reviewer must run fmc_approve.py with request_id={request_id}")
+if fmc_approval_required:
+    print(f"FMC notification sent. Reviewer must run fmc_approve.py with request_id={request_id}")
+else:
+    print(f"FMC review bypassed for {environment}; automated validation remains mandatory.")
 
 # COMMAND ----------
 # MAGIC %md
@@ -131,10 +139,10 @@ print(f"FMC notification sent. Reviewer must run fmc_approve.py with request_id=
 
 # COMMAND ----------
 deadline = datetime.datetime.utcnow() + datetime.timedelta(minutes=fmc_timeout_minutes)
-fmc_decision = "PENDING"
-approved_by  = ""
+fmc_decision = "PENDING" if fmc_approval_required else "APPROVED"
+approved_by = "" if fmc_approval_required else "DEV_AUTO_APPROVAL"
 
-while datetime.datetime.utcnow() < deadline:
+while fmc_approval_required and datetime.datetime.utcnow() < deadline:
     result = spark.sql(f"""
         SELECT approval_status, approver
         FROM   {cfg.model_approvals}
@@ -155,8 +163,9 @@ while datetime.datetime.utcnow() < deadline:
           f"{remaining} min remaining. Next check in {POLL_INTERVAL_SECONDS//60} min.")
     time.sleep(POLL_INTERVAL_SECONDS)
 else:
-    fmc_decision = "TIMEOUT"
-    print(f"FMC timeout after {fmc_timeout_minutes} minutes — treating as REJECTED.")
+    if fmc_approval_required:
+        fmc_decision = "TIMEOUT"
+        print(f"FMC timeout after {fmc_timeout_minutes} minutes — treating as REJECTED.")
 
 # COMMAND ----------
 # MAGIC %md

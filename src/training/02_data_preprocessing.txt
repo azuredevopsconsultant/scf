@@ -12,7 +12,7 @@
 # MAGIC tracking (Catalog Explorer shows source table → feature table → model).
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
@@ -150,7 +150,10 @@ from src.common.glm_core import RATE_BINS, RATE_LABELS
 
 agg_df['delta_to_best_buy'] = agg_df['int_rate'] - agg_df['best_buy']
 agg_df['dbb_range'] = pd.cut(agg_df['delta_to_best_buy'], bins=RATE_BINS, labels=RATE_LABELS)
-agg_df = agg_df[~(agg_df['product'] == 'default unassigned')]
+excluded_products = {'default unassigned', 'offset'}
+agg_df = agg_df[
+    ~agg_df['product'].astype(str).str.strip().str.casefold().isin(excluded_products)
+]
 agg_df = agg_df.drop_duplicates(['product', 'cohort', 'months_since_start'])
 
 # COMMAND ----------

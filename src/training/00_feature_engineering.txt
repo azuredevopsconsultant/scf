@@ -23,7 +23,7 @@
 # MAGIC binomial) are validated here before the ratios feed the GLM.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("feature_schema", "feature_store")
 catalog = dbutils.widgets.get("catalog")
