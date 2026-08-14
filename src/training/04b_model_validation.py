@@ -19,7 +19,7 @@
 # MAGIC If any check fails → sets `validation_passed=false` → challenger is rejected.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("model_name", "")

@@ -366,6 +366,31 @@ COMMENT 'Audit: auto-generated model card per registered version — name, versi
 """, "model_cards")
 
 run(f"""
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.model_coefficients (
+  product          STRING,
+  sub_model        STRING,
+  family           STRING,
+  term             STRING,
+  coefficient      DOUBLE,
+  std_err          DOUBLE,
+  p_value          DOUBLE,
+  ci_lower         DOUBLE,
+  ci_upper         DOUBLE,
+  significant_5pct BOOLEAN,
+  deviance         DOUBLE,
+  aic              DOUBLE,
+  pseudo_r2        DOUBLE,
+  n_obs            BIGINT,
+  converged        BOOLEAN,
+  cutoff_period    STRING,
+  trained_at       STRING
+)
+USING DELTA
+TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
+COMMENT 'Audit: per-product GLM coefficient summary (estimate, SE, p-value, CI, GOF) per training run — model-risk sign-off'
+""", "model_coefficients")
+
+run(f"""
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.deployment_history (
   endpoint_name  STRING,
   action         STRING,

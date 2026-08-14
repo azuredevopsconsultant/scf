@@ -1,0 +1,138 @@
+name: "CD: Deploy SCF Cohort Bundle (OIDC)"
+
+# Continuous Deployment only (CI/validation lives in ci.yml). Deploys the
+# Databricks Asset Bundle to dev -> preprod -> prod using GitHub OIDC token
+# exchange -- no PAT or client secret is stored in the repo.
+#
+# Auth: the Databricks CLI's github-oidc provider reads the GitHub-issued
+# id-token automatically when `permissions.id-token: write` is set and
+# DATABRICKS_HOST + DATABRICKS_CLIENT_ID are provided. The target workspace
+# must have an account-level federation policy binding the service principal
+# (DATABRICKS_CLIENT_ID) to this repo. No secret is exchanged.
+#
+# Per-environment auth follows the office convention (docs/office-workflows):
+# GitHub OIDC with the service-principal client id in a secret, plus
+# DATABRICKS_AUTH_TYPE=github-oidc (so the CLI uses the OIDC token instead of
+# trying client-secret auth) and the GODEBUG x509 flag. Configure per env:
+#   Settings > Secrets and variables > Actions (or per Environment) secrets:
+#     DATABRICKS_HOST_DEV / _PREPROD / _PROD
+#     DATABRICKS_CLIENT_ID_DEV / _PREPROD / _PROD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      run_training:
+        description: "Run the training pipeline on preprod after deploy"
+        type: boolean
+        default: true
+      deploy_prod:
+        description: "Deploy to production after preprod"
+        type: boolean
+        default: true
+
+# One deployment at a time; a newer push cancels an in-flight run.
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write        # required for GitHub OIDC token exchange
+
+jobs:
+  # ---------------------------------------------------------------
+  # DEV — always deploys first on push to main / manual dispatch.
+  # ---------------------------------------------------------------
+  deploy-dev:
+    name: Deploy -> Dev
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_DEV }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID_DEV }}
+      DATABRICKS_AUTH_TYPE: github-oidc
+      GODEBUG: "x509negativeserial=1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Deploy bundle (dev)
+        run: databricks bundle deploy -t dev
+
+  # ---------------------------------------------------------------
+  # PREPROD — gated by the `preprod` GitHub Environment. Add required
+  # reviewers there to force a manual approval before this job runs.
+  # ---------------------------------------------------------------
+  deploy-preprod:
+    name: Deploy -> Preprod
+    runs-on: ubuntu-latest
+    needs: deploy-dev
+    environment: preprod
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PREPROD }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID_PREPROD }}
+      DATABRICKS_AUTH_TYPE: github-oidc
+      GODEBUG: "x509negativeserial=1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Deploy bundle (preprod)
+        run: databricks bundle deploy -t preprod
+
+  # ---------------------------------------------------------------
+  # RUN TRAINING ON PREPROD — optional smoke of the deployed workflow.
+  # ---------------------------------------------------------------
+  run-training-preprod:
+    name: Run Training Pipeline -> Preprod
+    runs-on: ubuntu-latest
+    needs: deploy-preprod
+    if: ${{ github.event_name == 'push' || inputs.run_training }}
+    environment: preprod
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PREPROD }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID_PREPROD }}
+      DATABRICKS_AUTH_TYPE: github-oidc
+      GODEBUG: "x509negativeserial=1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Run training pipeline (preprod)
+        run: databricks bundle run scf_training_pipeline -t preprod
+
+  # ---------------------------------------------------------------
+  # PROD — gated by the `production` GitHub Environment (required
+  # reviewers = your FMC / release sign-off). Deploys the last stable
+  # tag if one exists, otherwise the current commit.
+  # ---------------------------------------------------------------
+  deploy-prod:
+    name: Deploy -> Production
+    runs-on: ubuntu-latest
+    needs: run-training-preprod
+    if: ${{ github.event_name == 'push' || inputs.deploy_prod }}
+    environment: production
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PROD }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID_PROD }}
+      DATABRICKS_AUTH_TYPE: github-oidc
+      GODEBUG: "x509negativeserial=1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Deploy bundle (prod)
+        run: databricks bundle deploy -t prod

@@ -9,8 +9,11 @@
 # training job. The job is run inside Databricks via its schedule or a manual
 # run - or on demand via the separate run-training.yml (workflow_dispatch).
 #
-# Auth: GitHub OIDC (no PAT). Requires `permissions: id-token: write` and the
-# preprod service-principal client id in DATABRICKS_CLIENT_ID.
+# Auth: GitHub OIDC (no PAT). Requires `permissions: id-token: write`, the
+# preprod service-principal client id in DATABRICKS_CLIENT_ID, and
+# DATABRICKS_AUTH_TYPE=github-oidc (without it the CLI can't disambiguate
+# OIDC from client-secret auth and fails with "cannot configure default
+# credentials" even though the token/client_id are both present).
 
 name: 20 - Deploy Preprod
 
@@ -30,6 +33,8 @@ jobs:
     env:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PREPROD }}
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID_PREPROD }}
+      DATABRICKS_AUTH_TYPE: github-oidc   # required so the CLI uses the GitHub OIDC token
+                                           # instead of trying (and failing) client-secret auth
       GODEBUG: "x509negativeserial=1"
     steps:
       - name: Checkout Repository Code

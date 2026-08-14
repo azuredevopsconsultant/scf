@@ -29,11 +29,19 @@ RATE_LABELS = [
 class DataPrep:
     """Train/test split, month-2 drop, IQR outlier removal - per product."""
 
-    def __init__(self, df, product, cutoff_period='2025-01', drop_month2=True):
+    def __init__(
+        self,
+        df,
+        product,
+        cutoff_period='2025-01',
+        drop_month2=True,
+        training_start_period=None,
+    ):
         self.df = df.copy()
         self.product = product
         self.cutoff_period = cutoff_period
         self.drop_month2 = drop_month2
+        self.training_start_period = training_start_period
         self.train = None
         self.test = None
 
@@ -47,6 +55,9 @@ class DataPrep:
         df = self.df[self.df['product'] == self.product].copy()
         cutoff = pd.Period(self.cutoff_period, freq='M')
         self.train = df[df['reporting_period'] < cutoff].copy()
+        if self.training_start_period:
+            training_start = pd.Period(self.training_start_period, freq='M')
+            self.train = self.train[self.train['reporting_period'] >= training_start]
         self.test = df[df['reporting_period'] >= cutoff].copy()
         if self.drop_month2:
             self.train = self.train[self.train['months_since_start'] != 2]
@@ -266,8 +277,15 @@ class ModelingPipeline:
     def run_for_product(
         self, PRODUCT, cutoff_period='2025-01', drop_month2=True, month_start=2, month_end=50,
         proj_start_period=None, proj_end_period=None, proj_cohort_cutoff='2024-12', save_csv=False,
+        training_start_period=None,
     ):
-        prep = DataPrep(self.df, PRODUCT, cutoff_period, drop_month2)
+        prep = DataPrep(
+            self.df,
+            PRODUCT,
+            cutoff_period,
+            drop_month2,
+            training_start_period,
+        )
         train, train_rec, train_outflow, train_wd = prep.build_training_set()
 
         glm = GLMTrainer(train_rec, train_outflow, train_wd)

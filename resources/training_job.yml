@@ -53,10 +53,16 @@ resources:
           default: ${var.model_name}
         - name: model_schema
           default: ${var.model_schema}
+        - name: training_start_period
+          default: ${var.training_start_period}
         - name: cutoff_period
-          default: "2025-01"
+          default: ${var.cutoff_period}
+        - name: test_end_period
+          default: ${var.test_end_period}
         - name: environment
           default: ${var.environment}
+        - name: fmc_approval_required
+          default: ${var.fmc_approval_required}
         - name: notification_webhook_url
           default: ${var.notification_webhook_url}
         - name: serving_endpoint_name
@@ -65,7 +71,7 @@ resources:
           # UC Volume holding the real source files:
           #   base_query_df_apr_2026.parquet, moneyfacts_merge.parquet,
           #   QRM_products_revised.csv
-          default: /Volumes/preprod_catalog/ml_workspace/data_scientists/SCF
+          default: ${var.volume_path}
         - name: feature_schema
           default: feature_store
 
@@ -154,7 +160,9 @@ resources:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
               model_schema: "{{job.parameters.model_schema}}"
+              training_start_period: "{{job.parameters.training_start_period}}"
               cutoff_period: "{{job.parameters.cutoff_period}}"
+              test_end_period: "{{job.parameters.test_end_period}}"
           timeout_seconds: 10800
 
         - task_key: model_evaluation
@@ -219,6 +227,8 @@ resources:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
               model_name: "{{job.parameters.model_name}}"
+              environment: "{{job.parameters.environment}}"
+              fmc_approval_required: "{{job.parameters.fmc_approval_required}}"
               fmc_timeout_minutes: "1440"
               notification_email: ${var.notification_email}
               notification_webhook_url: "{{job.parameters.notification_webhook_url}}"

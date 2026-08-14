@@ -8,7 +8,7 @@
 # MAGIC so a bad preprocessing run never silently reaches model training.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")

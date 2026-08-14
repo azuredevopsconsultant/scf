@@ -6,7 +6,7 @@
 # MAGIC MAPE, and whether the challenger was promoted to champion) in one email.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("notification_email", "")
 dbutils.widgets.text("notification_webhook_url", "")

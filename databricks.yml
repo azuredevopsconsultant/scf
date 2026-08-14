@@ -6,13 +6,23 @@ include:
 
 variables:
   catalog:
-    default: pd_dtl_ds
+    default: poc_mlops_dev
   schema:
     default: savings_cashflow
   model_schema:
     default: ml_models
   model_name:
     default: ${var.catalog}.${var.model_schema}.scf_cohort_model
+  volume_path:
+    default: /Volumes/poc_mlops_dev/savings_cashflow/scf_v2
+  training_start_period:
+    default: "2022-12"
+  cutoff_period:
+    default: "2026-01"
+  test_end_period:
+    default: "2026-05"
+  fmc_approval_required:
+    default: true
   notification_email:
     default: capukvelu@gmail.com
   notification_webhook_url:
@@ -38,7 +48,10 @@ targets:
       host: https://dbc-a2b9471c-0cac.cloud.databricks.com
     variables:
       environment: dev
-      catalog: pd_dtl_ds_dev
+      catalog: poc_mlops_dev
+      schema: savings_cashflow
+      volume_path: /Volumes/poc_mlops_dev/savings_cashflow/scf_v2
+      fmc_approval_required: false
       notification_email: capukvelu@gmail.com
       notification_webhook_url: ""
       serving_endpoint_name: scf-cohort-serving-endpoint-dev

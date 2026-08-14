@@ -86,6 +86,11 @@ class Config:
         return f"{self.catalog}.{self.schema}.model_cards"
 
     @property
+    def model_coefficients(self) -> str:
+        """Per-product GLM coefficient summary (term, estimate, SE, p-value, CI, GOF) for model-risk sign-off."""
+        return f"{self.catalog}.{self.schema}.model_coefficients"
+
+    @property
     def deployment_history(self) -> str:
         """Every endpoint create/update: version deployed, rollout %, timestamp."""
         return f"{self.catalog}.{self.schema}.deployment_history"
