@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python \"C:\\\\Users\\\\velmu\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-velmu-OneDrive-Desktop-scf-cohort-dab\\\\8254844b-352e-44f8-82df-0f5b12a5222e\\\\scratchpad\\\\build_doc.py\")",
+      "Bash(python \"C:\\\\Users\\\\velmu\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-velmu-OneDrive-Desktop-scf-cohort-dab\\\\8254844b-352e-44f8-82df-0f5b12a5222e\\\\scratchpad\\\\build_client_briefing.py\")"
+    ]
+  }
+}

@@ -10,7 +10,7 @@
 # MAGIC 4. Run all cells — the training pipeline will detect the decision and proceed
 
 # COMMAND ----------
-dbutils.widgets.text("catalog",       "pd_dtl_ds")
+dbutils.widgets.text("catalog",       "poc_mlops_dev")
 dbutils.widgets.text("schema",        "savings_cashflow")
 dbutils.widgets.text("request_id",    "")
 dbutils.widgets.text("decision",      "APPROVED")    # APPROVED or REJECTED

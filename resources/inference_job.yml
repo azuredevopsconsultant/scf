@@ -46,9 +46,13 @@ resources:
         - name: notification_webhook_url
           default: ${var.notification_webhook_url}
         - name: volume_path
-          default: /Volumes/preprod_catalog/ml_workspace/data_scientists/SCF
+          default: ${var.volume_path}
+        - name: training_start_period
+          default: ${var.training_start_period}
         - name: cutoff_period
-          default: "2025-01"
+          default: ${var.cutoff_period}
+        - name: test_end_period
+          default: ${var.test_end_period}
 
       environments:
         - environment_key: default
@@ -220,5 +224,7 @@ resources:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
               model_name: "{{job.parameters.model_name}}"
+              training_start_period: "{{job.parameters.training_start_period}}"
               cutoff_period: "{{job.parameters.cutoff_period}}"
+              test_end_period: "{{job.parameters.test_end_period}}"
               notification_webhook_url: "{{job.parameters.notification_webhook_url}}"

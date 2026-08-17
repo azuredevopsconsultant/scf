@@ -48,6 +48,20 @@ def test_data_prep_split_respects_cutoff():
     assert (test["reporting_period"] >= pd.Period("2024-04", freq="M")).all()
 
 
+def test_data_prep_respects_inclusive_training_start():
+    df = _make_fake_agg_df()
+    prep = DataPrep(
+        df,
+        product="EA ISA (Online)",
+        cutoff_period="2024-06",
+        drop_month2=False,
+        training_start_period="2024-03",
+    )
+    train, _ = prep.split_train_test()
+    assert train["reporting_period"].min() == pd.Period("2024-03", freq="M")
+    assert train["reporting_period"].max() == pd.Period("2024-05", freq="M")
+
+
 def test_data_prep_drops_month_2():
     df = _make_fake_agg_df()
     prep = DataPrep(df, product="EA ISA (Online)", cutoff_period="2024-06", drop_month2=True)

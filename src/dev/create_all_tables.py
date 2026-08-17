@@ -9,12 +9,15 @@
 # COMMAND ----------
 dbutils.widgets.text("catalog", "pd_dtl_ds_dev")
 dbutils.widgets.text("schema",  "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 catalog = dbutils.widgets.get("catalog")
 schema  = dbutils.widgets.get("schema")
+model_schema = dbutils.widgets.get("model_schema")
 
 spark.sql(f"CREATE CATALOG  IF NOT EXISTS {catalog}")
 spark.sql(f"CREATE SCHEMA   IF NOT EXISTS {catalog}.{schema}")
-spark.sql(f"CREATE VOLUME   IF NOT EXISTS {catalog}.{schema}.model_artifacts")
+spark.sql(f"CREATE SCHEMA   IF NOT EXISTS {catalog}.{model_schema}")
+spark.sql(f"CREATE VOLUME   IF NOT EXISTS {catalog}.{model_schema}.model_artifacts")
 
 print(f"Initialising tables in {catalog}.{schema}")
 created, skipped = [], []
@@ -188,6 +191,33 @@ COMMENT 'Gold: GLM balance/flow predictions per cohort × product × period (app
 """, "inference_predictions")
 
 run(f"""
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.inference_predictions_product_month (
+  product              STRING,
+  reporting_period     STRING,
+  balance_pred         DOUBLE,
+  receipts_pred        DOUBLE,
+  withdrawals_pred     DOUBLE,
+  transfers_pred       DOUBLE,
+  balance              DOUBLE,
+  receipts             DOUBLE,
+  withdrawals          DOUBLE,
+  transfers            DOUBLE,
+  ape_balance          DOUBLE,
+  n_cohorts            BIGINT,
+  scored_at            STRING,
+  model_name           STRING,
+  model_version        STRING,
+  model_alias          STRING
+)
+USING DELTA
+TBLPROPERTIES (
+  'delta.autoOptimize.optimizeWrite' = 'true',
+  'delta.autoOptimize.autoCompact'   = 'true'
+)
+COMMENT 'Gold: per-cohort forecasts summed up to product × month (append-only)'
+""", "inference_predictions_product_month")
+
+run(f"""
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.model_eval_metrics (
   product                     STRING,
   evaluated_at                STRING,
@@ -334,6 +364,31 @@ USING DELTA
 TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 COMMENT 'Audit: auto-generated model card per registered version — name, version, run_id, features, MAPE'
 """, "model_cards")
+
+run(f"""
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.model_coefficients (
+  product          STRING,
+  sub_model        STRING,
+  family           STRING,
+  term             STRING,
+  coefficient      DOUBLE,
+  std_err          DOUBLE,
+  p_value          DOUBLE,
+  ci_lower         DOUBLE,
+  ci_upper         DOUBLE,
+  significant_5pct BOOLEAN,
+  deviance         DOUBLE,
+  aic              DOUBLE,
+  pseudo_r2        DOUBLE,
+  n_obs            BIGINT,
+  converged        BOOLEAN,
+  cutoff_period    STRING,
+  trained_at       STRING
+)
+USING DELTA
+TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
+COMMENT 'Audit: per-product GLM coefficient summary (estimate, SE, p-value, CI, GOF) per training run — model-risk sign-off'
+""", "model_coefficients")
 
 run(f"""
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.deployment_history (

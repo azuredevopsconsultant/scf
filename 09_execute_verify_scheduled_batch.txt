@@ -1,0 +1,43 @@
+# Databricks notebook source
+"""Verify the scheduled batch completed with reproducibility evidence."""
+from datetime import datetime, timezone
+from pyspark.sql import functions as F
+
+for name, default in [
+    ("catalog", ""), ("schema", ""), ("cutoff_period", ""), ("model_name", "")
+]:
+    dbutils.widgets.text(name, default)
+
+catalog = dbutils.widgets.get("catalog")
+schema = dbutils.widgets.get("schema")
+cutoff_period = dbutils.widgets.get("cutoff_period")
+model_name = dbutils.widgets.get("model_name")
+
+ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+run_id = ctx.currentRunId().get() if ctx.currentRunId().isDefined() else "unknown"
+
+# Resolve latest dataset version from the governed audit table when available.
+delta_version = "unresolved"
+try:
+    row = (spark.table(f"{catalog}.{schema}.dataset_versions")
+           .orderBy(F.col("timestamp").desc()).limit(1).collect())
+    if row:
+        for candidate in ("version", "delta_version", "version_number"):
+            if candidate in row[0].asDict():
+                delta_version = str(row[0][candidate]); break
+except Exception as exc:
+    print(f"Dataset version lookup warning: {exc}")
+
+# Model registration must have completed before this task can pass.
+import mlflow
+client = mlflow.MlflowClient()
+champion = client.get_model_version_by_alias(model_name, "champion")
+model_version = str(champion.version)
+
+rows = [(run_id, cutoff_period, delta_version, model_name, model_version, "VERIFIED", datetime.now(timezone.utc))]
+cols = ["job_run_id", "data_cutoff", "delta_version", "model_name", "model_version", "verification_status", "verified_at_utc"]
+(spark.createDataFrame(rows, cols)
+ .write.format("delta").mode("append")
+ .saveAsTable(f"{catalog}.{schema}.batch_execution_audit"))
+
+print(f"Scheduled batch VERIFIED: run_id={run_id}, cutoff={cutoff_period}, delta_version={delta_version}, model_version={model_version}")

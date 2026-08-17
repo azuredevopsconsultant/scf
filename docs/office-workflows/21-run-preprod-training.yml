@@ -1,0 +1,50 @@
+# 21 - Run Preprod Training (auto, after deploy)
+#
+# READY-TO-COPY reference for the office repo
+# (do-mlops-savings-databricks-pipeline). Copy over
+# .github/workflows/21-run-preprod-training.yml.
+#
+# Fires automatically once "20 - Deploy Preprod" completes successfully,
+# keeping "deploy the bundle" and "run the training job" as two separate,
+# auditable workflow runs (Databricks best practice - see 20-deploy-preprod.yml).
+#
+# Auth: GitHub OIDC (no PAT). Requires `permissions: id-token: write`, the
+# preprod service-principal client id in DATABRICKS_CLIENT_ID, and
+# DATABRICKS_AUTH_TYPE=github-oidc (without it the CLI can't disambiguate
+# OIDC from client-secret auth and fails with "cannot configure default
+# credentials" even though the token/client_id are both present).
+
+name: "21 - Run Preprod Training"
+
+on:
+  workflow_run:
+    workflows:
+      - "20 - Deploy Preprod"
+    types:
+      - completed
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  run-training:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PREPROD }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID_PREPROD }}
+      DATABRICKS_AUTH_TYPE: github-oidc
+      GODEBUG: "x509negativeserial=1"
+
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Setup Databricks CLI Tooling
+        uses: databricks/setup-cli@main
+
+      - name: Authenticate and Trigger Workflow Run
+        run: |
+          databricks bundle run -t preprod scf_cohort_training_job

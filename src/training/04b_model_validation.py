@@ -19,12 +19,14 @@
 # MAGIC If any check fails → sets `validation_passed=false` → challenger is rejected.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("model_name", "")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 
 import sys, pickle, datetime
 sys.path.append("../..")
@@ -39,7 +41,7 @@ import matplotlib.pyplot as plt
 mlflow.set_registry_uri("databricks-uc")
 cfg = get_config(catalog, schema)
 client = MlflowClient()
-VOLUME_PATH = f"/Volumes/{catalog}/{schema}/model_artifacts"
+VOLUME_PATH = f"/Volumes/{catalog}/{model_schema}/model_artifacts"
 
 # COMMAND ----------
 # MAGIC %md

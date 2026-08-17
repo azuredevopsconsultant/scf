@@ -23,13 +23,15 @@
 # MAGIC   (scored_at, model_name, model_version, model_alias) for traceability.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 dbutils.widgets.text("model_name", "")
+dbutils.widgets.text("model_schema", "ml_models")
 dbutils.widgets.text("model_alias", "champion")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-model_name = dbutils.widgets.get("model_name") or f"{catalog}.{schema}.scf_cohort_model"
+model_schema = dbutils.widgets.get("model_schema")
+model_name = dbutils.widgets.get("model_name") or f"{catalog}.{model_schema}.scf_cohort_model"
 model_alias = dbutils.widgets.get("model_alias") or "champion"
 
 import sys, datetime
@@ -188,6 +190,46 @@ print(f"Predictions generated: {n_predictions} rows across {n_products} products
 print(f"Written to: {cfg.inference_predictions}")
 
 # COMMAND ----------
+# Final output roll-up: forecasts are produced per cohort, then summed up to
+# product x month. This is the product-level view the business consumes
+# (cohort-level detail stays in inference_predictions above).
+product_month_sdf = (
+    predictions_sdf
+    .groupBy("product", "reporting_period")
+    .agg(
+        F.sum("balance_pred").alias("balance_pred"),
+        F.sum("receipts_pred").alias("receipts_pred"),
+        F.sum("withdrawals_pred").alias("withdrawals_pred"),
+        F.sum("transfers_pred").alias("transfers_pred"),
+        F.sum("balance").alias("balance"),
+        F.sum("receipts").alias("receipts"),
+        F.sum("withdrawals").alias("withdrawals"),
+        F.sum("transfers").alias("transfers"),
+        F.countDistinct("cohort").alias("n_cohorts"),
+    )
+    # Product-month APE recomputed on the aggregated totals (not averaged from
+    # cohort APEs), matching how the business scores product-level accuracy.
+    .withColumn(
+        "ape_balance",
+        F.when(F.col("balance") != 0,
+               F.abs((F.col("balance") - F.col("balance_pred")) / F.col("balance")))
+    )
+    .withColumn("scored_at",     F.lit(scored_at))
+    .withColumn("model_name",    F.lit(model_name))
+    .withColumn("model_version", F.lit(str(model_version)))
+    .withColumn("model_alias",   F.lit(model_alias))
+)
+
+(
+    product_month_sdf
+    .write
+    .mode("append")
+    .option("mergeSchema", "true")
+    .saveAsTable(cfg.inference_predictions_product_month)
+)
+print(f"Product x month roll-up written to: {cfg.inference_predictions_product_month}")
+
+# COMMAND ----------
 # Log inference run to MLflow for Unity Catalog lineage.
 # This ties the inference batch back to the champion model run so
 # Catalog Explorer shows the full lineage: source table → model → output table.
@@ -231,5 +273,5 @@ print(f"  Champion model : {model_name} v{model_version} (@{model_alias})")
 print(f"  Rows scored    : {n_predictions}")
 print(f"  Products       : {n_products}")
 print(f"  Output table   : {cfg.inference_predictions}")
+print(f"  Product×month  : {cfg.inference_predictions_product_month}")
 print(f"  Scored at      : {scored_at}")
-

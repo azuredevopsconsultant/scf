@@ -12,7 +12,7 @@
 # MAGIC tracking (Catalog Explorer shows source table → feature table → model).
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
@@ -127,6 +127,20 @@ agg_df = agg_df[~(agg_df['increasing_size'] == True)]  # noqa: E712
 agg_df.loc[agg_df['outflow_prop'] > 1, 'outflow_prop'] = 1
 
 # COMMAND ----------
+# Range checks on the GLM flow ratios (model-owner requirement): along with
+# outflow_prop above, rec_prop must be >= 0 (Gamma/Tweedie log-link) and
+# withdrawal_prop_of_outflow must lie in [0, 1] (Binomial). Report how many
+# rows fall outside range, then clamp so a single dirty cohort can't break
+# the GLM fit downstream.
+_rec_bad = int((agg_df['rec_prop'] < 0).sum())
+_wpo_bad = int(((agg_df['withdrawal_prop_of_outflow'] < 0) |
+                (agg_df['withdrawal_prop_of_outflow'] > 1)).sum())
+print(f"rec_prop < 0                : {_rec_bad} rows (clamped to 0)")
+print(f"withdrawal_prop_of_outflow  : {_wpo_bad} rows outside [0,1] (clamped)")
+agg_df['rec_prop'] = agg_df['rec_prop'].clip(lower=0)
+agg_df['withdrawal_prop_of_outflow'] = agg_df['withdrawal_prop_of_outflow'].clip(0, 1)
+
+# COMMAND ----------
 agg_df.loc[agg_df['withdrawal_prop_of_outflow'].isnull(), 'withdrawal_prop_of_outflow'] = 0
 
 # Delta-to-best-buy: how far a cohort's rate sits from the market best-buy rate,
@@ -136,7 +150,10 @@ from src.common.glm_core import RATE_BINS, RATE_LABELS
 
 agg_df['delta_to_best_buy'] = agg_df['int_rate'] - agg_df['best_buy']
 agg_df['dbb_range'] = pd.cut(agg_df['delta_to_best_buy'], bins=RATE_BINS, labels=RATE_LABELS)
-agg_df = agg_df[~(agg_df['product'] == 'default unassigned')]
+excluded_products = {'default unassigned', 'offset'}
+agg_df = agg_df[
+    ~agg_df['product'].astype(str).str.strip().str.casefold().isin(excluded_products)
+]
 agg_df = agg_df.drop_duplicates(['product', 'cohort', 'months_since_start'])
 
 # COMMAND ----------

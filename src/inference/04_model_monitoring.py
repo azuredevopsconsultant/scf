@@ -10,7 +10,7 @@
 # MAGIC   5. Portfolio MAPE and null rate passed forward to retraining_trigger.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")

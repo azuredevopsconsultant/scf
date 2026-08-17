@@ -1,0 +1,53 @@
+# 20 - Deploy Preprod (DEPLOY ONLY)
+#
+# READY-TO-COPY reference for the office repo
+# (do-mlops-savings-databricks-pipeline). Copy over
+# .github/workflows/20-deploy-preprod.yml.
+#
+# Databricks best practice: the deploy workflow ONLY deploys the bundle
+# (creates/updates the job definitions + schedules). It does NOT execute the
+# training job. The job is run inside Databricks via its schedule or a manual
+# run - or on demand via the separate run-training.yml (workflow_dispatch).
+#
+# Auth: GitHub OIDC (no PAT). Requires `permissions: id-token: write`, the
+# preprod service-principal client id in DATABRICKS_CLIENT_ID, and
+# DATABRICKS_AUTH_TYPE=github-oidc (without it the CLI can't disambiguate
+# OIDC from client-secret auth and fails with "cannot configure default
+# credentials" even though the token/client_id are both present).
+
+name: 20 - Deploy Preprod
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write        # required for GitHub OIDC login
+  contents: read
+
+jobs:
+  deploy-preprod:
+    name: Deploy -> Preprod
+    runs-on: ubuntu-latest
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_PREPROD }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID_PREPROD }}
+      DATABRICKS_AUTH_TYPE: github-oidc   # required so the CLI uses the GitHub OIDC token
+                                           # instead of trying (and failing) client-secret auth
+      GODEBUG: "x509negativeserial=1"
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Setup Databricks CLI Tooling
+        uses: databricks/setup-cli@main
+
+      - name: Validate Bundle
+        run: databricks bundle validate -t preprod
+
+      - name: Deploy Bundle to Preprod
+        run: databricks bundle deploy -t preprod
+      # NOTE: intentionally no `databricks bundle run` here.
+      # The training job runs within Databricks (schedule / manual) or via
+      # run-training.yml. Deploys stay idempotent and side-effect-free.

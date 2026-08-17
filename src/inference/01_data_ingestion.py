@@ -8,9 +8,9 @@
 # MAGIC Volume path is controlled by the `volume_path` widget.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "pd_dtl_ds")
+dbutils.widgets.text("catalog", "poc_mlops_dev")
 dbutils.widgets.text("schema", "savings_cashflow")
-dbutils.widgets.text("volume_path", "/Volumes/preprod_catalog/ml_workspace/data_scientists/SCF")
+dbutils.widgets.text("volume_path", "/Volumes/poc_mlops_dev/savings_cashflow/scf_v2")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
 volume_path = dbutils.widgets.get("volume_path")

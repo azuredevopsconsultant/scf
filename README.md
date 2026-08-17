@@ -6,6 +6,16 @@ forward per cohort × product, achieving **2.28% Mean APE** on a £9–11bn port
 
 **Model:** 30 GLMs (10 products × 3 GLMs) packaged as one MLflow pyfunc.
 
+The GLMs are never served directly. Each product's 3 GLMs (receipts, outflow,
+withdrawal-vs-transfer split) are evaluated once at training time into three
+*flow-ratio lookup tables* (receipts & outflows indexed by cohort age × rate
+bucket; transfers by rate bucket only). All 10 products' tables are collected
+into a single `product_tables` dict and wrapped in one `SCFCohortModel` pyfunc
+([src/common/pyfunc_model.py](src/common/pyfunc_model.py)). At `predict()` time
+it replays the same recursive projection (`BuildProjections`) per cohort and
+sums the result to product × month — so the ~30 fitted models register, version,
+and serve as **one** Unity Catalog model unit.
+
 ```
 scf-cohort-dab/
 ├── databricks.yml                 # bundle root: dev/preprod/prod targets, service principals

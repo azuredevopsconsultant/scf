@@ -1,0 +1,338 @@
+================================================================================
+BATCH 2 - INFERENCE PIPELINE (Modified 06:01:29)
+================================================================================
+Date: 2026-08-14
+Total Files: 8
+Total Lines: ~1,200+ lines of Databricks notebook code
+Pipeline Flow: Data Ingestion → Preprocessing → Inference → Monitoring → Drift → Quality → Mail → Retrain Trigger
+
+================================================================================
+FILE 3: src/inference/01_data_ingestion.py
+================================================================================
+Purpose: Load raw source data from UC Volumes into managed tables
+Status: Complete notebook
+Type: Databricks notebook (Spark SQL + Python)
+
+KEY FUNCTIONS:
+- Read parquet files from UC Volume path:
+  * base_query_df_apr_2026.parquet → raw_base_data (base customer balances & flows)
+  * moneyfacts_merge.parquet → raw_best_buy (market rate benchmarks)
+  * QRM_products_revised.csv → raw_qrm_products (product category mappings)
+- Write to Unity Catalog managed tables (overwrite mode)
+- Verify non-empty row counts before proceeding
+- Fail fast if source data is missing (empty assertion checks)
+
+INPUTS:
+- dbutils widgets: catalog, schema, volume_path (configurable UC Volume location)
+
+OUTPUTS:
+- raw_base_data table (hundreds of thousands of rows)
+- raw_best_buy table (market benchmark rates per period × product)
+- raw_qrm_products table (product code → category mappings)
+
+STATUS: ✓ READY - Identical source reader to training pipeline
+
+================================================================================
+FILE 4: src/inference/02_data_preprocessing.py
+================================================================================
+Purpose: Transform raw data into inference-ready features (identical to training flow)
+Status: Complete notebook (~300 lines)
+Type: Databricks notebook with Feature Engineering Client integration
+
+KEY FUNCTIONS:
+1. best_buy_mapping: Standardize product categories (10+ mappings)
+2. Date → Period conversion (reporting_period, cohort from dates)
+3. Merge best_buy rates by product × reporting period
+4. Calculate months_since_start: (reporting_period - cohort) in months
+5. Cohort aggregation: sum balances/flows/transfers per cohort age × product
+6. Lag calculation: previous month's balance (balance_lag_1)
+7. balance_lag_1 seeding: Pull last known balance from training silver table
+   → Handles first inference period where lag would be NaN
+   → Ensures first month predictions chain correctly
+8. Zero-balance handling: Replace balance_lag_1=0 with 1 (avoid division by 0)
+9. Ratio calculations: rec_prop, outflow_prop, withdrawal_prop_of_outflow
+10. delta_to_best_buy binning: Cut into 11 RATE_LABELS using RATE_BINS from glm_core
+11. Product filtering: Exclude unmapped/default categories
+12. Duplicate removal on (product, cohort, months_since_start)
+13. Feature store write: Use Feature Engineering Client for UC lineage tracking
+    → Creates table with primary key (cohort, product, months_since_start)
+    → Merges on subsequent runs (upsert pattern)
+
+INPUTS:
+- raw_base_data, raw_best_buy, raw_qrm_products (from 01_data_ingestion.py)
+- silver_agg_cohort (training Silver table for balance_lag_1 seeding)
+
+OUTPUTS:
+- inference_features table (hundreds of thousands rows after aggregation)
+- Records dataset version in dataset_versions audit table
+
+DESIGN NOTES:
+✓ Identical feature pipeline to training (same merges, formulas, binning)
+✓ Re-seeds balance_lag_1 from training Silver when NaN (avoids prediction chains breaking)
+✓ Uses Feature Engineering Client for native UC lineage (shows raw → features → predictions)
+
+================================================================================
+FILE 5: src/inference/03_inference.py
+================================================================================
+Purpose: Batch inference using champion model loaded by alias
+Status: Complete notebook (~350 lines)
+Type: MLflow + Spark distributed batch inference
+
+KEY FUNCTIONS:
+1. Load champion model from UC Model Registry by **alias**:
+   → model_uri = "models:/{model_name}@champion"
+   → Enables promotion (update alias) = only deploy step
+2. Resolve actual numeric version for audit columns
+3. Load inference_features as Spark DataFrame (keeps as Spark until applyInPandas)
+4. Define PREDICTION_SCHEMA: 17 fields (predictions + actuals + APE + ratios)
+5. predict_product_partition(pandas_df) → applied per product:
+   → Spark groups features by product, sends each executor one product's batch
+   → Executor runs model.predict() on pandas DataFrame
+   → Computes APE per row: |actual - pred| / actual (handles zero-denominators)
+   → Returns predictions with audit schema
+6. Add audit columns: scored_at, model_name, model_version, model_alias
+7. Write to inference_predictions table (append-only Delta):
+   → mergeSchema allows evolution if BuildProjections adds columns
+   → Audit columns enable traceability of which model version scored each row
+8. Compute product_month summary: sum predictions to product × month granularity
+
+INPUTS:
+- inference_features (from 02_data_preprocessing.py)
+- @champion model from UC Model Registry
+
+OUTPUTS:
+- inference_predictions table (append-only with audit columns)
+- Product-month summary for BI dashboards
+
+DESIGN NOTES:
+✓ Spark-native distributed inference per product (applyInPandas grouped by product)
+✓ Audit columns stamped on every row (model_name, version, alias, scored_at)
+✓ APE computation matches Excel formula with zero-denominator guard
+✓ Append-only pattern enables run history without recomputation
+
+================================================================================
+FILE 6: src/inference/04_model_monitoring.py
+================================================================================
+Purpose: Compute MAPE/RMSE metrics with actuals feedback loop
+Status: Complete notebook (~250 lines)
+Type: Databricks notebook with matplotlib visualization
+
+KEY FUNCTIONS:
+1. Load latest inference batch: filter predictions by max(scored_at)
+2. Actuals feedback loop:
+   → Join ground-truth balances from silver_agg_cohort
+   → Overwrite prediction-batch balance with actuals where available
+   → Handles lag: actuals may arrive weeks after scoring (quarterly updates)
+3. Evaluator: Per-product MAPE/RMSE on (actuals, predictions)
+4. Metrics per product: n_predictions, null_prediction_rate, has_actuals, MAPE, RMSE
+5. Aggregate metrics to monitoring_metrics table
+6. Portfolio-level guard: fail task if max null_prediction_rate > 50%
+   → Signals broken model_alias or feature mismatch (job-level on_failure email fires)
+7. Visualizations (rendered inline):
+   → Per-product: 2×2 subplot grid (Balance, Receipts, Withdrawals, Transfers)
+     Actual vs Predicted line plots with period labels (only when actuals available)
+   → Portfolio-level: Summed totals across all products (same 4 flows)
+   → Uses matplotlib with £M/£B formatting for y-axis labels
+
+INPUTS:
+- inference_predictions (latest scored batch)
+- silver_agg_cohort (actuals feedback when available)
+
+OUTPUTS:
+- monitoring_metrics table (per-product MAPE/RMSE + nulls)
+- Task values: max_null_rate, portfolio_mape_monitoring (passed to retraining_trigger)
+- Inline Databricks notebook charts (actual vs predicted per product)
+
+DESIGN NOTES:
+✓ Actuals feedback allows live MAPE (not just prediction vs prediction)
+✓ Portfolio-level guard fails task outright (prevents silent model failures)
+✓ Null-rate tracking early signal of infrastructure issues (before actuals lag)
+
+================================================================================
+FILE 7: src/inference/05_data_drift.py
+================================================================================
+Purpose: Feature/prediction/extrapolation drift detection with PSI
+Status: Complete notebook (~250 lines)
+Type: Databricks notebook with versioned baseline management
+
+DRIFT TYPES & CONFIGURATION:
+1. Feature drift (covariate shift, P(X)):
+   → DRIFT_COLUMNS: int_rate, best_buy, delta_to_best_buy, tenure_months, #accounts
+   → Threshold: PSI_WARN_THRESHOLD, PSI_ALERT_THRESHOLD (from config)
+
+2. Prediction/output drift (P(Y-hat)):
+   → PREDICTION_DRIFT_COLUMNS: balance_pred, rec_pct_pred, outflow_pct_pred, transfer_pct_pred
+   → Leading signal (fires before ground-truth actuals lag by months)
+
+3. GLM extrapolation guard:
+   → EXTRAPOLATION_FEATURE: delta_to_best_buy
+   → Flags when batch sits outside training [min, max] range (GLM risk)
+   → Alert threshold: cfg.EXTRAPOLATION_ALERT_RATE (e.g., 5% OOR → alert)
+
+KEY FUNCTIONS:
+1. load_versioned_reference(table_name, seed_pdf):
+   → Reads frozen baseline for currently-served model version (versioning discipline)
+   → Falls back to most recent if served version has no baseline
+   → Lazy-seeds from current batch (tagged with model version) if baseline table empty
+   → Append-only + never overwritten → past drift runs reproducible, baseline<->model lineage auditable
+
+2. compute_drift_report(reference, current, columns, thresholds):
+   → PSI (Population Stability Index) per feature
+   → Status: OK / WARN / ALERT based on threshold
+
+3. extrapolation_report(ref_feature, current_feature, alert_rate):
+   → % of current batch outside training [min, max] range
+   → Status: OK / ALERT based on alert_rate threshold
+
+4. Send notifications **only when drift detected**:
+   → Email and/or webhook to FMC/ops team
+   → Includes drift summary (feature::psi values)
+
+INPUTS:
+- inference_features (current scoring batch)
+- inference_predictions (latest scored batch)
+- Frozen baseline tables (versioned by model version)
+
+OUTPUTS:
+- drift_results table (appended with feature, psi, status, drift_type columns)
+- Task value: drift_detected (boolean passed to retraining_trigger)
+- Email/webhook notifications (conditional on drift + config)
+
+DESIGN NOTES:
+✓ Versioned baselines enable audit trail (model v1 baseline ≠ model v2 baseline)
+✓ Lazy-seeding allows first model run without manual baseline setup
+✓ GLM-specific extrapolation guard (rate environment most important for GLM risk)
+✓ Conditional notifications (only when drift, not on every run)
+
+================================================================================
+FILE 8: src/inference/06_data_quality.py
+================================================================================
+Purpose: Quality gate on inference_features before scoring
+Status: Complete notebook (~100 lines)
+Type: Databricks notebook with reusable check functions
+
+QUALITY CHECKS RUN:
+1. Schema validation: Must contain required columns
+   → product, cohort, reporting_period, months_since_start
+   → balance, balance_lag_1, delta_to_best_buy, dbb_range
+
+2. Row count floor: ≥ 100 rows minimum
+
+3. Null rate ceilings on critical columns:
+   → balance, product, cohort, balance_lag_1, dbb_range
+   → Max null rate: cfg.NULL_RATE_FAIL_THRESHOLD (typically 1-5%)
+
+4. Value range validation:
+   → delta_to_best_buy ∈ [-3.0, 3.0] (covers all realistic rate environments)
+
+ENFORCEMENT:
+- All checks logged to data_quality_results table
+- Task fails (job-level on_failure email) if any check fails
+- Prevents silent propagation of bad inputs into predictions
+
+INPUTS:
+- inference_features (from 02_data_preprocessing.py)
+
+OUTPUTS:
+- data_quality_results table (append-only check audit trail)
+- Task value: data_quality_passed (boolean passed to confirmation_mail)
+
+DESIGN NOTES:
+✓ Hard gates (fail task) prevent bad data silently reaching model
+✓ Reusable check functions imported from src/common/quality_checks.py
+✓ All checks logged for audit trail (regulatory requirement)
+
+================================================================================
+FILE 9: src/inference/07_confirmation_mail.py
+================================================================================
+Purpose: End-of-pipeline summary email (always runs, even on failure)
+Status: Complete notebook (~50 lines)
+Type: Databricks notebook with notification routing
+
+KEY FUNCTIONS:
+1. Collects task values from all upstream stages:
+   → inferencing: n_predictions
+   → data_drift: drift_detected
+   → data_quality: data_quality_passed
+   → retraining_trigger: retrain_recommended, retrain_reason
+
+2. Sends confirmation email to notification_email widget
+   → Includes run URL (link to Databricks notebook run)
+   → Summary shows pass/fail status for each stage
+   → One email = full pipeline status (not fragmented across multiple emails)
+
+3. Optional webhook notification (Teams/Slack etc.)
+
+DESIGN NOTES:
+✓ run_if: ALL_DONE in job spec (runs regardless of upstream success/failure)
+✓ Separate from job-level on_success/on_failure (those only say "run passed/failed")
+✓ Provides per-stage visibility into what happened
+
+================================================================================
+FILE 10: src/inference/08_retraining_trigger.py
+================================================================================
+Purpose: Combine monitoring + drift signals to recommend retraining
+Status: Complete notebook (~80 lines)
+Type: Databricks notebook with decision logic
+
+DECISION LOGIC:
+- Input signals from monitoring and drift tasks:
+  * drift_detected: boolean from 05_data_drift.py
+  * max_null_rate: float from 04_model_monitoring.py (prediction NaN rate)
+  * portfolio_mape: float from 04_model_monitoring.py (if actuals available)
+
+- Thresholds (from config):
+  * RETRAIN_NULL_RATE_THRESHOLD: e.g., 10% (null rate floor to retrain)
+  * RETRAIN_MAPE_THRESHOLD: e.g., 20.0% (MAPE ceiling to retrain)
+
+- Retraining recommendation if:
+  * drift_detected = True (feature/prediction/extrapolation)
+  * OR max_null_rate exceeds threshold (infrastructure issue)
+  * OR portfolio_mape exceeds threshold (model degradation)
+
+OUTPUT:
+- Task values:
+  * retrain_recommended (boolean)
+  * retrain_reason (string explaining why)
+
+- Optional webhook notification if recommended + configured
+
+DESIGN NOTES:
+✓ Combines multiple signals (drift + monitoring) into one retraining decision
+✓ Passes recommendation forward to 07_confirmation_mail.py
+✓ Does NOT trigger retraining automatically (manual decision by team)
+
+================================================================================
+INFERENCE PIPELINE SUMMARY
+================================================================================
+
+END-TO-END FLOW:
+01_data_ingestion
+    ↓ (raw data)
+02_data_preprocessing
+    ↓ (features)
+03_inference (champion model @alias)
+    ├→ inference_predictions (audit columns)
+    │
+04_model_monitoring → max_null_rate, portfolio_mape_monitoring (task values)
+    │
+05_data_drift → drift_detected (task value)
+    │
+06_data_quality ✓ (hard gate)
+    │
+07_confirmation_mail (always runs)
+    │
+08_retraining_trigger → retrain_recommended, retrain_reason (task values)
+
+KEY PATTERNS:
+✓ UC lineage: raw_base_data → inference_features → inference_predictions → (BI dashboards)
+✓ Audit trail: All decisions logged (model version, scored_at, drift, quality)
+✓ Conditional notifications: Email/webhook only when action needed (drift/retrain)
+✓ Task values chain: Monitoring/drift → mail → retrain signal
+✓ Fail-fast guards: Quality checks + null-rate spikes → job-level failures
+✓ Append-only tables: Enables run history without recomputation
+
+INFERENCE RUNTIME: ~5-10 minutes (depends on data volume)
+EXECUTION: Databricks job scheduled (daily recommended)
+
+================================================================================

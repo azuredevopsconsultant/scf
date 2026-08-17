@@ -1,0 +1,30 @@
+# Databricks notebook source
+"""Record the effective batch schedule configuration for this training run.
+
+The schedule itself is declaratively managed by the Databricks Asset Bundle.
+This task captures the effective cadence/environment as audit evidence so the
+same workflow can be repeated consistently across DEV, PREPROD and PROD.
+"""
+from datetime import datetime, timezone
+
+dbutils.widgets.text("catalog", "")
+dbutils.widgets.text("schema", "")
+dbutils.widgets.text("environment", "dev")
+dbutils.widgets.text("schedule_cron", "0 0 3 1 1,4,7,10 ?")
+dbutils.widgets.text("schedule_timezone", "UTC")
+dbutils.widgets.text("schedule_pause_status", "PAUSED")
+
+catalog = dbutils.widgets.get("catalog")
+schema = dbutils.widgets.get("schema")
+environment = dbutils.widgets.get("environment")
+cron = dbutils.widgets.get("schedule_cron")
+timezone_id = dbutils.widgets.get("schedule_timezone")
+pause_status = dbutils.widgets.get("schedule_pause_status")
+
+rows = [(environment, cron, timezone_id, pause_status, datetime.now(timezone.utc))]
+cols = ["environment", "quartz_cron_expression", "timezone_id", "pause_status", "recorded_at_utc"]
+(spark.createDataFrame(rows, cols)
+ .write.format("delta").mode("append")
+ .saveAsTable(f"{catalog}.{schema}.batch_schedule_audit"))
+
+print(f"Batch schedule recorded: env={environment}, cron={cron}, timezone={timezone_id}, status={pause_status}")

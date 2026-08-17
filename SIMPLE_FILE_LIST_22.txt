@@ -1,0 +1,44 @@
+SIMPLE ORGANIZED LIST - ALL 22 PYTHON FILES CHANGED (2026-08-14)
+==================================================================
+
+BATCH 1 - MODIFIED AT 05:48:34 (2 FILES)
+========================================
+
+Core & Tests:
+1. src/common/glm_core.py
+2. tests/test_glm_core.py
+
+
+BATCH 2 - MODIFIED AT 06:01:29 (20 FILES)
+=========================================
+
+INFERENCE PIPELINE (8 FILES):
+1. src/inference/01_data_ingestion.py
+2. src/inference/02_data_preprocessing.py
+3. src/inference/03_inference.py
+4. src/inference/04_model_monitoring.py
+5. src/inference/05_data_drift.py
+6. src/inference/06_data_quality.py
+7. src/inference/07_confirmation_mail.py
+8. src/inference/08_retraining_trigger.py
+
+TRAINING PIPELINE (12 FILES):
+1. src/training/00_feature_engineering.py
+2. src/training/01_data_ingestion.py
+3. src/training/02_data_preprocessing.py
+4. src/training/02b_data_validation.py
+5. src/training/03_model_training.py
+6. src/training/04_model_evaluation.py
+7. src/training/04b_model_validation.py
+8. src/training/05_model_registration.py
+9. src/training/05a_fmc_validation_gate.py
+10. src/training/06_confirmation_mail.py
+11. src/training/08_smoke_test_serving_endpoint.py
+12. src/training/fmc_approve.py
+
+
+SUMMARY
+=======
+Total Files: 22
+Yesterday: 0 changes
+Today: 22 files (all changed between 05:48:34 - 06:01:29)
