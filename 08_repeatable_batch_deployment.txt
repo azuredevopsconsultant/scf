@@ -1,0 +1,42 @@
+# Databricks notebook source
+"""Capture repeatable-deployment provenance for the currently deployed bundle.
+
+Actual `databricks bundle validate/deploy -t <target>` is performed by CI/CD,
+not recursively from inside the Databricks job. This task records the target,
+code version and model version used by the run, making repeated deployments
+traceable without changing workflow code between environments.
+"""
+from datetime import datetime, timezone
+import os
+import mlflow
+
+for name, default in [
+    ("catalog", ""), ("schema", ""), ("environment", "dev"),
+    ("model_name", ""), ("git_commit", "unknown"), ("bundle_version", "unknown")
+]:
+    dbutils.widgets.text(name, default)
+
+catalog = dbutils.widgets.get("catalog")
+schema = dbutils.widgets.get("schema")
+environment = dbutils.widgets.get("environment")
+model_name = dbutils.widgets.get("model_name")
+git_commit = dbutils.widgets.get("git_commit") or os.getenv("GITHUB_SHA", "unknown")
+bundle_version = dbutils.widgets.get("bundle_version")
+
+client = mlflow.MlflowClient()
+try:
+    champion = client.get_model_version_by_alias(model_name, "champion")
+    model_version = str(champion.version)
+except Exception:
+    model_version = "unresolved"
+
+ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+run_id = ctx.currentRunId().get() if ctx.currentRunId().isDefined() else "unknown"
+
+rows = [(environment, git_commit, bundle_version, run_id, model_name, model_version, datetime.now(timezone.utc))]
+cols = ["environment", "git_commit", "bundle_version", "job_run_id", "model_name", "champion_model_version", "recorded_at_utc"]
+(spark.createDataFrame(rows, cols)
+ .write.format("delta").mode("append")
+ .saveAsTable(f"{catalog}.{schema}.batch_deployment_audit"))
+
+print(f"Repeatable deployment evidence recorded: target={environment}, run_id={run_id}, model_version={model_version}")
